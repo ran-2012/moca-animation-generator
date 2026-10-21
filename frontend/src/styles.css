@@ -227,6 +227,66 @@ body[data-resizing='timeline'] {
   min-height: 110px;
 }
 
+.multi-timeline {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #0b0e15;
+}
+
+.multi-timeline-tools {
+  height: 30px;
+  flex: 0 0 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-muted);
+  font: 9px var(--mono);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.segmented button {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.segmented button:last-child { border-right: 0; }
+.segmented button.active { background: rgba(124, 92, 255, .2); color: var(--text); }
+
+.timeline-ruler {
+  width: 100%;
+  height: 24px;
+  flex: 0 0 24px;
+  display: block;
+  border-bottom: 1px solid var(--line);
+}
+
+.multi-timeline-viewport {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.multi-timeline-viewport canvas { display: block; }
+
 .timeline-dock .timeline-legend {
   flex: 0 0 auto;
 }
@@ -726,7 +786,12 @@ body[data-resizing='timeline'] {
   display: block;
   position: absolute;
   inset: 0;
-  cursor: default;
+  cursor: grab;
+  touch-action: none;
+}
+
+.stage-canvas.panning {
+  cursor: grabbing;
 }
 
 .stage-toolbar {
@@ -1774,6 +1839,30 @@ body[data-resizing='timeline'] {
   font-size: 8.5px;
   color: var(--text-muted);
   line-height: 1.4;
+}
+
+.sway-controls {
+  display: grid;
+  grid-template-columns: minmax(116px, 1.2fr) repeat(3, minmax(92px, 1fr));
+  align-items: end;
+  gap: 8px;
+  padding: 9px 10px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.sway-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.sway-controls input[type='range'] {
+  width: 100%;
+  accent-color: #55c7b8;
 }
 
 .state-hero {

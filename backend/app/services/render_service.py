@@ -341,19 +341,33 @@ class FrameSource:
 
     def __init__(self, timeline: Mapping[str, Any] | None, blinks: list[Any],
                  assets: PreparedAssets, brow: str | None = None,
-                 cheek: str | None = None) -> None:
-        frames: list[tuple[float, str]] = []
+                 cheek: str | None = None, sway: Mapping[str, Any] | None = None) -> None:
+        frames: list[tuple[float, str, str | None]] = []
         for item in (timeline or {}).get("frames") or []:
             if isinstance(item, Mapping):
                 t = float(item.get("t") or 0.0)
                 viseme = str(item.get("viseme") or "closed")
+                mouth_pose = str(item["mouthPose"]) if item.get("mouthPose") else None
             else:
                 t = float(item[0])
                 viseme = str(item[1])
-            frames.append((t, viseme))
+                mouth_pose = None
+            frames.append((t, viseme, mouth_pose))
         frames.sort(key=lambda pair: pair[0])
         self._times = [pair[0] for pair in frames]
         self._visemes = [pair[1] for pair in frames]
+        self._mouth_poses = [pair[2] for pair in frames]
+
+        self._track_times: dict[str, list[float]] = {}
+        self._track_states: dict[str, list[str]] = {}
+        for channel, items in ((timeline or {}).get("tracks") or {}).items():
+            events = sorted(
+                (float(item.get("t") or 0.0), str(item.get("state")))
+                for item in items
+                if isinstance(item, Mapping) and item.get("state") is not None
+            )
+            self._track_times[str(channel)] = [event[0] for event in events]
+            self._track_states[str(channel)] = [event[1] for event in events]
 
         normalized_blinks: list[tuple[float, float]] = []
         for item in blinks or []:
@@ -371,8 +385,15 @@ class FrameSource:
         self.assets = assets
         self._states = {channel: _channel_states(assets.patches, channel)
                         for channel in assets.zorder}
-        self.brow = brow or assets.default_state.get("brow")
-        self.cheek = cheek or assets.default_state.get("cheek")
+        self.brow = brow
+        self.cheek = cheek
+        sway = sway or {}
+        self.sway_enabled = bool(sway.get("enabled")) and float(sway.get("bpm") or 0) > 0
+        self.sway_amplitude = max(0.0, min(1.0, float(sway.get("amplitude") or 0.0)))
+        self.sway_frequency = max(0.125, min(4.0, float(sway.get("frequency") or 0.5)))
+        self.sway_offset = max(-64.0, min(64.0, float(sway.get("offset") or 0.0)))
+        self.sway_bpm = max(0.0, float(sway.get("bpm") or 0.0))
+        self.sway_audio_start = max(-300.0, min(300.0, float(sway.get("audioStart") or 0.0)))
 
     # -- canvas --------------------------------------------------------
     @property
@@ -384,36 +405,53 @@ class FrameSource:
         return self.assets.height
 
     # -- state ---------------------------------------------------------
-    def _viseme_at(self, t: float) -> str:
+    def _mouth_at(self, t: float) -> tuple[str | None, str]:
         if not self._times:
-            return "closed"
+            return None, "closed"
         index = bisect.bisect_right(self._times, t + 1e-9) - 1
         if index < 0:
             index = 0
-        return self._visemes[index]
+        return self._mouth_poses[index], self._visemes[index]
+
+    def _track_at(self, channel: str, t: float) -> str | None:
+        times = self._track_times.get(channel) or []
+        index = bisect.bisect_right(times, t + 1e-9) - 1
+        return self._track_states[channel][index] if index >= 0 else None
 
     def _resolve(self, channel: str, wanted: str | None) -> str | None:
         states = self._states.get(channel) or set()
         if not states:
             return None
+        if wanted == "off":
+            return None
         if wanted in states:
             return wanted
         fallback = self.assets.default_state.get(channel)
+        if fallback == "off":
+            return None
         if fallback in states:
             return fallback
         return sorted(states)[0]
 
     def state_at(self, t: float) -> dict[str, str]:
         blinking = _blink_active(self._blinks, t)
+        mouth_pose, viseme = self._mouth_at(t)
         wanted = {
-            "mouth": self._viseme_at(t),
-            "eyes": "blink" if blinking else "open",
-            "brow": self.brow,
-            "cheek": self.cheek,
+            channel: self._track_at(channel, t)
+            for channel in self.assets.zorder
         }
+        wanted["eyes"] = "blink" if blinking else wanted.get("eyes")
+        if self.brow is not None:
+            wanted["brow"] = self.brow
+        if self.cheek is not None:
+            wanted["cheek"] = self.cheek
         state: dict[str, str] = {}
         for channel in self.assets.zorder:
-            choice = self._resolve(channel, wanted.get(channel))
+            if channel == "mouth":
+                states = self._states.get(channel) or set()
+                choice = mouth_pose if mouth_pose in states else self._resolve(channel, viseme)
+            else:
+                choice = self._resolve(channel, wanted.get(channel))
             if choice:
                 state[channel] = f"{channel}.{choice}"
         return state
@@ -433,7 +471,39 @@ class FrameSource:
         return frame
 
     def compose(self, t: float) -> Image.Image:
-        return self.compose_state(self.state_at(t))
+        frame = self.compose_state(self.state_at(t))
+        if not self.sway_enabled or self.sway_amplitude <= 0:
+            return frame
+        safe_scale = 1.0 - 0.12 * self.sway_amplitude
+        safe_size = (
+            max(1, round(self.width * safe_scale)),
+            max(1, round(self.height * safe_scale)),
+        )
+        scaled = frame.resize(safe_size, Image.Resampling.LANCZOS)
+        safe_frame = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+        safe_x = (self.width - safe_size[0]) // 2
+        safe_y = (self.height - safe_size[1]) // 2
+        safe_frame.alpha_composite(scaled, (safe_x, safe_y))
+        beat = (t - self.sway_audio_start) * self.sway_bpm / 60.0
+        phase = math.tau * ((beat + self.sway_offset) * self.sway_frequency)
+        angle = math.radians(4.0) * self.sway_amplitude * math.sin(phase)
+        scale_y = 1.0 + 0.02 * self.sway_amplitude * math.cos(phase * 2.0)
+        cosine, sine = math.cos(angle), math.sin(angle)
+        pivot_x, pivot_y = self.width / 2.0, float(safe_y + safe_size[1])
+        inverse = (
+            cosine,
+            sine,
+            pivot_x - cosine * pivot_x - sine * pivot_y,
+            -sine / scale_y,
+            cosine / scale_y,
+            pivot_y + sine * pivot_x / scale_y - cosine * pivot_y / scale_y,
+        )
+        return safe_frame.transform(
+            safe_frame.size,
+            Image.Transform.AFFINE,
+            inverse,
+            resample=Image.Resampling.BICUBIC,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -615,10 +685,10 @@ def _render_png_zip(job_id: str, source: FrameSource, start: float, fps: float,
             for index in range(frame_count):
                 t = start + index / fps
                 state = source.state_at(t)
-                key = tuple(sorted(state.items()))
+                key = (tuple(sorted(state.items())), index if source.sway_enabled else -1)
                 data = cache.get(key)
                 if data is None:
-                    image = source.compose_state(state)
+                    image = source.compose(t) if source.sway_enabled else source.compose_state(state)
                     buffer = io.BytesIO()
                     image.save(buffer, format="PNG", compress_level=3)
                     data = buffer.getvalue()
@@ -660,11 +730,11 @@ def _encode_video(job_id: str, source: FrameSource, start: float, fps: float,
             for index in range(frame_count):
                 t = start + index / fps
                 state = source.state_at(t)
-                key = tuple(sorted(state.items()))
+                key = (tuple(sorted(state.items())), index if source.sway_enabled else -1)
                 if key == last_key and last_chunk is not None:
                     chunk = last_chunk
                 else:
-                    image = source.compose_state(state)
+                    image = source.compose(t) if source.sway_enabled else source.compose_state(state)
                     if fmt == "mp4":
                         canvas = Image.new("RGB", image.size, background)
                         canvas.paste(image, (0, 0), image)
@@ -743,37 +813,61 @@ def _validate(req: RenderRequest) -> tuple[float, float, int]:
 
 
 def _slice_timeline(timeline: Mapping[str, Any], start: float,
-                    duration: float) -> list[list[Any]]:
+                    duration: float) -> list[dict[str, Any]]:
     """Keep only the frames needed for [start, start+duration) (+1 look-behind)."""
-    frames: list[tuple[float, str]] = []
+    frames: list[dict[str, Any]] = []
     for index, item in enumerate(timeline.get("frames") or []):
         if isinstance(item, Mapping):
             try:
                 t = float(item.get("t") or 0.0)
                 viseme = str(item.get("viseme") or "closed")
+                frame = {"t": t, "viseme": viseme}
+                if item.get("mouthPose") is not None:
+                    frame["mouthPose"] = str(item["mouthPose"])
             except (TypeError, ValueError):
                 raise RenderError(400, f"timeline.frames[{index}] 格式无效。") from None
         else:
             try:
                 t = float(item[0])
                 viseme = str(item[1])
+                frame = {"t": t, "viseme": viseme}
             except (TypeError, ValueError, IndexError):
                 raise RenderError(400, f"timeline.frames[{index}] 格式无效。") from None
         if not math.isfinite(t):
             raise RenderError(400, f"timeline.frames[{index}].t 无效。")
-        frames.append((t, viseme))
-    frames.sort(key=lambda pair: pair[0])
+        frames.append(frame)
+    frames.sort(key=lambda value: value["t"])
     if not frames:
         return []
     end = start + duration
-    times = [pair[0] for pair in frames]
+    times = [frame["t"] for frame in frames]
     first = max(0, bisect.bisect_right(times, start + 1e-9) - 1)
-    selected = [[frames[first][0], frames[first][1]]]
-    for t, viseme in frames[first + 1:]:
-        if t > end + 1e-9:
+    selected = [frames[first]]
+    for frame in frames[first + 1:]:
+        if frame["t"] > end + 1e-9:
             break
-        selected.append([t, viseme])
+        selected.append(frame)
     return selected
+
+
+def _slice_tracks(timeline: Mapping[str, Any], start: float,
+                  duration: float) -> dict[str, list[dict[str, Any]]]:
+    end = start + duration
+    result: dict[str, list[dict[str, Any]]] = {}
+    for channel, raw_items in (timeline.get("tracks") or {}).items():
+        items = sorted(
+            (dict(item) for item in raw_items if isinstance(item, Mapping)),
+            key=lambda item: float(item.get("t") or 0.0),
+        )
+        if not items:
+            continue
+        times = [float(item.get("t") or 0.0) for item in items]
+        first = max(0, bisect.bisect_right(times, start + 1e-9) - 1)
+        selected = [items[first]]
+        selected.extend(item for item in items[first + 1:]
+                        if float(item.get("t") or 0.0) <= end + 1e-9)
+        result[str(channel)] = selected
+    return result
 
 
 def _slice_blinks(blinks: list[Any], start: float, duration: float) -> list[list[float]]:
@@ -834,11 +928,15 @@ def _run_job(job_id: str) -> None:
         if not isinstance(assets, PreparedAssets):
             assets = prepare_assets(str(params["psdAssetId"]), int(job["width"]))
         source = FrameSource(
-            timeline={"frames": params.get("frames") or []},
+            timeline={
+                "frames": params.get("frames") or [],
+                "tracks": params.get("tracks") or {},
+            },
             blinks=params.get("blinks") or [],
             assets=assets,
             brow=params.get("brow"),
             cheek=params.get("cheek"),
+            sway=params.get("sway"),
         )
         if job["format"] == "png_zip":
             _render_png_zip(job_id, source, float(params["startSec"]),
@@ -933,7 +1031,9 @@ def submit(req: RenderRequest) -> RenderJobInfo:
         job_id = "r_" + uuid.uuid4().hex[:12]
 
     timeline = req.timeline
-    frames = _slice_timeline(timeline.model_dump(), start, duration)
+    timeline_data = timeline.model_dump()
+    frames = _slice_timeline(timeline_data, start, duration)
+    tracks = _slice_tracks(timeline_data, start, duration)
     blinks = _slice_blinks([blink.model_dump() for blink in req.blinks], start, duration)
 
     job: dict[str, Any] = {
@@ -955,6 +1055,7 @@ def submit(req: RenderRequest) -> RenderJobInfo:
         "params": {
             "psdAssetId": req.psdAssetId,
             "frames": frames,
+            "tracks": tracks,
             "blinks": blinks,
             "startSec": start,
             "durationSec": duration,
@@ -962,6 +1063,7 @@ def submit(req: RenderRequest) -> RenderJobInfo:
             "background": list(background),
             "brow": req.brow,
             "cheek": req.cheek,
+            "sway": req.sway.model_dump() if req.sway else None,
         },
         "_assets": assets,
         "_lastPersist": time.monotonic(),

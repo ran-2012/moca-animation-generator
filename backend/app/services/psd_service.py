@@ -54,8 +54,11 @@ _ASSET_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
 _CANVAS_PAD = 0
 
 # Channels and their priority order (bottom -> top) used when no profile says otherwise.
-DEFAULT_ZORDER = ["cheek", "mouth", "eyes", "brow"]
-DEFAULT_STATE = {"mouth": "closed", "eyes": "open", "brow": "neutral", "cheek": "normal"}
+DEFAULT_ZORDER = ["cheek", "mouth", "eyes", "brow", "eyeEffect", "sweat"]
+DEFAULT_STATE = {
+    "mouth": "closed", "eyes": "open", "brow": "neutral", "cheek": "normal",
+    "eyeEffect": "off", "sweat": "off",
+}
 
 # Group names that identify a semantic feature container.  Matching is done on a
 # normalized name (spaces / separators removed, lower-cased).
@@ -64,6 +67,8 @@ FEATURE_ALIASES: dict[str, tuple[str, ...]] = {
     "eyes": ("目", "め", "eye", "eyes", "まなこ"),
     "brow": ("眉毛", "まゆ", "brow", "eyebrow", "eyebrows"),
     "cheek": ("頬", "ほお", "cheek", "blush", "チーク", "頬っぺた"),
+    "sweat": ("汗", "sweat"),
+    "eyeEffect": ("効果", "eye effect", "eyeeffect"),
 }
 
 # Per-state layer names.  Exact normalized matches win over prefix/contains matches.
@@ -76,6 +81,14 @@ STATE_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "o": ("お", "オ", "o"),
         "n": ("ん", "ン", "n"),
         "closed": ("ω", "Ω", "w", "ー", "--", "口閉じ", "口を閉じる", "とじ", "閉じ", "closed"),
+        "narrow": ("ん",),
+        "pressed": ("むむ",),
+        "roundSmall": ("ぉ",),
+        "aSoft": ("あー",),
+        "wide": ("わー",),
+        "openLarge": ("□",),
+        "openXLarge": ("□大",),
+        "scream": ("ぎゃー",),
     },
     "eyes": {
         "open": ("通常", "ノーマル", "open", "開き", "開眼", "おめめ"),
@@ -94,6 +107,15 @@ STATE_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "normal": ("通常", "ノーマル", "normal", "neutral"),
         "blush": ("赤面", "頬染め", "照れ", "blush", "赤らみ"),
         "deep": ("真っ赤", "真赤", "まっか", "deep", "激赤"),
+    },
+    "sweat": {
+        "single": ("汗",),
+        "double": ("汗汗",),
+        "neck": ("首汗",),
+    },
+    "eyeEffect": {
+        "tear": ("涙",),
+        "cry": ("泣き",),
     },
 }
 
@@ -804,7 +826,10 @@ def _automap_profile(asset_id: str) -> dict[str, Any]:
         if not mapping:
             continue
         preferred = DEFAULT_STATE.get(channel)
-        default_state[channel] = preferred if preferred in mapping else next(iter(mapping))
+        if channel in ("sweat", "eyeEffect"):
+            default_state[channel] = "off"
+        else:
+            default_state[channel] = preferred if preferred in mapping else next(iter(mapping))
 
     zorder = [channel for channel in DEFAULT_ZORDER if channel in channels]
     zorder += [channel for channel in channels if channel not in zorder]
@@ -817,6 +842,17 @@ def _automap_profile(asset_id: str) -> dict[str, Any]:
             "defaultState": default_state,
         },
         "channels": channels,
+        "mappingSets": {
+            "standard": {"label": "标准", "channels": channels},
+        },
+        "defaultMappingSetId": "standard",
+        "channelDefinitions": {
+            channel: {
+                "behavior": "overlay" if channel in ("sweat", "eyeEffect") else "exclusive",
+                "defaultState": DEFAULT_STATE.get(channel, next(iter(mapping))),
+            }
+            for channel, mapping in channels.items()
+        },
         "zorder": zorder,
         "meta": {
             "auto": True,
@@ -845,7 +881,13 @@ def _prepare_profile(asset_id: str, profile: Any) -> dict[str, Any]:
     hidden_groups = [str(path) for path in (base_raw.get("hiddenGroups") or []) if str(path)]
     hidden_layers = [str(layer) for layer in (base_raw.get("hiddenLayers") or []) if str(layer)]
     default_raw = base_raw.get("defaultState") if isinstance(base_raw.get("defaultState"), dict) else {}
-    channels_raw = profile.get("channels") if isinstance(profile.get("channels"), dict) else {}
+    mapping_sets_raw = profile.get("mappingSets") if isinstance(profile.get("mappingSets"), dict) else {}
+    default_mapping_set_id = str(profile.get("defaultMappingSetId") or "standard")
+    selected_set = mapping_sets_raw.get(default_mapping_set_id)
+    selected_channels = selected_set.get("channels") if isinstance(selected_set, dict) else None
+    channels_raw = profile.get("channels") if isinstance(profile.get("channels"), dict) else (
+        selected_channels if isinstance(selected_channels, dict) else {}
+    )
     channels: dict[str, dict[str, str]] = {}
     for channel, states in channels_raw.items():
         if not isinstance(states, dict):
@@ -860,9 +902,43 @@ def _prepare_profile(asset_id: str, profile: Any) -> dict[str, Any]:
 
     default_state: dict[str, str] = {str(key): str(value) for key, value in default_raw.items() if value}
     for channel, states in channels.items():
+        if channel in ("sweat", "eyeEffect") and default_state.get(channel, "off") == "off":
+            default_state[channel] = "off"
+            continue
         if default_state.get(channel) not in states:
             default_state[channel] = DEFAULT_STATE.get(channel) if DEFAULT_STATE.get(channel) in states else next(iter(states))
 
+    cleaned_sets: dict[str, dict[str, Any]] = {}
+    for set_id, mapping_set in mapping_sets_raw.items():
+        if not isinstance(mapping_set, dict):
+            continue
+        set_channels: dict[str, dict[str, str]] = {}
+        for channel, states in (mapping_set.get("channels") or {}).items():
+            if not isinstance(states, dict):
+                continue
+            set_channels[str(channel)] = {
+                str(state): str(layer) for state, layer in states.items() if layer not in (None, "")
+            }
+        cleaned_sets[str(set_id)] = {
+            "label": str(mapping_set.get("label") or set_id),
+            "channels": set_channels,
+        }
+    if not cleaned_sets:
+        cleaned_sets["standard"] = {"label": "标准", "channels": channels}
+        default_mapping_set_id = "standard"
+    if default_mapping_set_id not in cleaned_sets:
+        default_mapping_set_id = next(iter(cleaned_sets))
+    cleaned_sets[default_mapping_set_id]["channels"] = channels
+
+    channel_definitions = profile.get("channelDefinitions") if isinstance(profile.get("channelDefinitions"), dict) else {}
+    definitions = {
+        channel: {
+            "behavior": "overlay" if channel in ("sweat", "eyeEffect") else "exclusive",
+            "defaultState": DEFAULT_STATE.get(channel, next(iter(states), "off")),
+            **(channel_definitions.get(channel) if isinstance(channel_definitions.get(channel), dict) else {}),
+        }
+        for channel, states in channels.items()
+    }
     meta = profile.get("meta") if isinstance(profile.get("meta"), dict) else {}
     return {
         "psdAssetId": asset_id,
@@ -873,6 +949,9 @@ def _prepare_profile(asset_id: str, profile: Any) -> dict[str, Any]:
             "defaultState": default_state,
         },
         "channels": channels,
+        "mappingSets": cleaned_sets,
+        "defaultMappingSetId": default_mapping_set_id,
+        "channelDefinitions": definitions,
         "zorder": zorder,
         "meta": meta,
     }

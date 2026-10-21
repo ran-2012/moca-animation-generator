@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError, getRenderJob, submitRender } from '../api'
-import type { Blink, RenderFormat, RenderJobInfo, RenderRequestPayload, Timeline, ToastMessage } from '../types'
+import type { Blink, RenderFormat, RenderJobInfo, RenderRequestPayload, SwayConfig, Timeline, ToastMessage } from '../types'
 import { clamp, formatDuration, formatTimecode } from '../lib/format'
 import {
   EXPORT_BROW_STATES,
@@ -29,6 +29,9 @@ interface ExportPanelProps {
   defaultBrow: string
   defaultCheek: string
   mockMode: boolean
+  sway: SwayConfig
+  bpm: number | null
+  audioStart: number
   onNotify: (kind: ToastMessage['kind'], text: string) => void
 }
 
@@ -56,6 +59,9 @@ export function ExportPanel({
   defaultBrow,
   defaultCheek,
   mockMode,
+  sway,
+  bpm,
+  audioStart,
   onNotify,
 }: ExportPanelProps) {
   const [format, setFormat] = useState<RenderFormat>('png_zip')
@@ -66,15 +72,15 @@ export function ExportPanel({
   const [outFps, setOutFps] = useState<number>(24)
   const [width, setWidth] = useState<number>(1080)
   const [background, setBackground] = useState('#101010')
-  const [brow, setBrow] = useState(defaultBrow)
-  const [cheek, setCheek] = useState(defaultCheek)
+  const [brow, setBrow] = useState('')
+  const [cheek, setCheek] = useState('')
   const [job, setJob] = useState<RenderJobInfo | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setBrow(defaultBrow)
-    setCheek(defaultCheek)
+    setBrow('')
+    setCheek('')
   }, [defaultBrow, defaultCheek])
 
   const maxTimeline = timeline?.duration ?? 0
@@ -129,7 +135,12 @@ export function ExportPanel({
     setJob(null)
     const payload: RenderRequestPayload = {
       psdAssetId,
-      timeline: { fps: timeline.fps, duration: timeline.duration, frames: timeline.frames },
+      timeline: {
+        fps: timeline.fps,
+        duration: timeline.duration,
+        frames: timeline.frames,
+        tracks: timeline.tracks,
+      },
       blinks,
       startSec,
       durationSec,
@@ -137,8 +148,9 @@ export function ExportPanel({
       width,
       format,
       background,
-      brow,
-      cheek,
+      brow: brow || null,
+      cheek: cheek || null,
+      sway: { ...sway, bpm, audioStart },
     }
     try {
       const created = await submitRender(payload)
@@ -151,7 +163,7 @@ export function ExportPanel({
     } finally {
       setSubmitting(false)
     }
-  }, [background, blinks, brow, cheek, durationSec, format, onNotify, outFps, psdAssetId, ready, startSec, timeline, width])
+  }, [audioStart, background, blinks, bpm, brow, cheek, durationSec, format, onNotify, outFps, psdAssetId, ready, startSec, sway, timeline, width])
 
   // poll the render job until it finishes
   const jobId = job?.jobId
@@ -396,29 +408,29 @@ export function ExportPanel({
           <section className="export-section">
             <div className="export-section-head">
               <span>表情（可选）</span>
-              <em>整段固定眉毛 / 脸颊状态</em>
+              <em>默认跟随动画轨，也可整段固定</em>
             </div>
             <div className="export-fields">
               <label className="field">
                 <span>眉毛</span>
                 <select className="select" value={brow} onChange={(event) => setBrow(event.target.value)} disabled={locked}>
+                  <option value="">跟随动画轨 / {defaultBrow}</option>
                   {EXPORT_BROW_STATES.map((state) => (
                     <option key={state} value={state}>
                       {state}
                     </option>
                   ))}
-                  <option value="">跟随默认</option>
                 </select>
               </label>
               <label className="field">
                 <span>脸颊</span>
                 <select className="select" value={cheek} onChange={(event) => setCheek(event.target.value)} disabled={locked}>
+                  <option value="">跟随动画轨 / {defaultCheek}</option>
                   {EXPORT_CHEEK_STATES.map((state) => (
                     <option key={state} value={state}>
                       {state}
                     </option>
                   ))}
-                  <option value="">跟随默认</option>
                 </select>
               </label>
             </div>

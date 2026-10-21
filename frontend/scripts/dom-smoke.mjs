@@ -34,6 +34,14 @@ const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></
 
 const { window } = dom
 const errors = []
+const originalConsoleError = console.error
+console.error = (...args) => {
+  const message = args.map(String).join(' ')
+  if (message.includes('Maximum update depth exceeded')) {
+    errors.push(`${message}\n${new Error('React update loop').stack}`)
+  }
+  originalConsoleError(...args)
+}
 const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 
 Object.assign(globalThis, {
@@ -79,6 +87,9 @@ const fakeContext = () => {
 }
 window.HTMLCanvasElement.prototype.getContext = () => fakeContext()
 window.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+window.HTMLCanvasElement.prototype.setPointerCapture = () => {}
+window.HTMLCanvasElement.prototype.hasPointerCapture = () => true
+window.HTMLCanvasElement.prototype.releasePointerCapture = () => {}
 
 class FakeImage {
   naturalWidth = 160
@@ -288,6 +299,7 @@ try {
   step('核心工具函数自检')
   const tl = await server.ssrLoadModule('/src/lib/timeline.ts')
   const fmt = await server.ssrLoadModule('/src/lib/format.ts')
+  const sway = await server.ssrLoadModule('/src/lib/sway.ts')
   const dense = Array.from({ length: 600 }, (_, index) => ({
     t: index / 60,
     viseme: index < 30 ? 'closed' : index < 120 ? 'a' : index < 180 ? 'i' : 'closed',
@@ -302,6 +314,13 @@ try {
   assert(tl.isBlinkActive([{ t: 1, duration: 0.12 }], 1.3) === false, '眨眼事件不越界')
   assert(fmt.formatTimecode(61.5) === '01:01.50', '时间码 mm:ss.cs')
   assert(fmt.formatTimecode(61.5, true, 60) === '01:01:30', '时间码含帧号')
+  assert(sway.swayTransform(1, 120, sway.DEFAULT_SWAY).angle === 0, '摇摆关闭时不改变立绘')
+  const quarterSway = sway.swayTransform(0.25, 120, { enabled: true, amplitude: 1, frequency: 0.5, offset: 0 })
+  assert(Math.abs(quarterSway.angle - Math.PI / 45) < 1e-9, '摇摆按 BPM、频率和幅度计算倾角')
+  assert(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offset: 0 }).length === 3, '摇摆轨按实际周期生成事件')
+  assert(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 2, offset: 0 }).length === 9, '摇摆轨反映频率倍率')
+  assert(Math.abs(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offset: 0 }, 0.25)[0].t - 0.25) < 1e-9, '摇摆轨跟随音频起点')
+  assert(sway.normalizeSway({ enabled: true, amplitude: 4, frequency: 8, offset: 100 }).amplitude === 1, '摇摆参数统一限制到导出范围')
 
   const appModule = await server.ssrLoadModule('/src/App.tsx')
   const App = appModule.default
@@ -322,7 +341,7 @@ try {
         60000,
       )
       await waitFor('图层树恢复', () => document.querySelectorAll('.layer-row').length > 4, 30000)
-      assert(!!document.querySelector('.timeline-canvas-wrap'), '时间轴恢复')
+      assert(!!document.querySelector('.multi-timeline-viewport'), '多轨时间轴恢复')
       assert(bodyText().includes('LIVE') || bodyText().includes('真实后端'), '恢复后为真实后端模式')
       assert((document.querySelector('.asset-card')?.textContent ?? '').includes('moca.psd'), 'PSD 资产恢复')
       console.log('\n===== SESSION RESTORE OK =====')
@@ -376,8 +395,11 @@ try {
   clickButton('自动识别')
   await waitFor('映射槽位填充', () => [...document.querySelectorAll('.slot-row select')].filter((select) => select.value).length >= 16)
   const filled = [...document.querySelectorAll('.slot-row select')].filter((select) => select.value).length
-  assert(document.querySelectorAll('.slot-row').length === 19, '19 个语义槽位渲染完成')
-  assert(document.querySelectorAll('.channel-group').length === 4, '4 组语义通道渲染完成')
+  const slotCount = document.querySelectorAll('.slot-row').length
+  const channelCount = document.querySelectorAll('.channel-group').length
+  assert(slotCount >= 19, `语义槽位已扩展且保留原 19 项（共 ${slotCount} 项）`)
+  assert(channelCount >= 6, `基础及叠加通道渲染完成（共 ${channelCount} 组）`)
+  assert(bodyText().includes('汗 sweat') && bodyText().includes('眼部效果 eyeEffect'), '显示汗和眼部效果映射')
   assert(filled >= (REAL ? 18 : 16), `自动填充 ${filled} 个槽位`)
   assert(document.body.textContent.includes('置信') || REAL, '显示自动识别置信度')
 
@@ -393,6 +415,41 @@ try {
   const patchMatch = /(\d+)\s*patches/.exec(document.querySelector('.stage-hud').textContent)
   assert(Boolean(patchMatch) && Number(patchMatch[1]) >= 15, `舞台 HUD 加载 ${patchMatch?.[1]} 个 patch`)
   assert(!document.querySelector('.stage-empty'), '空状态卡片消失，舞台出现立绘')
+  const stageCanvas = document.querySelector('.stage-canvas')
+  const zoomBefore = document.querySelector('.zoom-label').textContent
+  await waitFor('舞台滚轮监听就绪', () => {
+    const stageWheel = new window.WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 450,
+      clientY: 310,
+      deltaY: -120,
+    })
+    stageCanvas.dispatchEvent(stageWheel)
+    return stageWheel.defaultPrevented
+  })
+  assert(true, '舞台滚轮缩放由预览接管')
+  await sleep(100)
+  assert(document.querySelector('.zoom-label').textContent !== zoomBefore, '舞台滚轮更新缩放比例')
+  const pointerEvent = (type, x, y) => {
+    const event = new window.MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y })
+    Object.defineProperty(event, 'pointerId', { value: 1 })
+    return event
+  }
+  stageCanvas.dispatchEvent(pointerEvent('pointerdown', 450, 310))
+  stageCanvas.dispatchEvent(pointerEvent('pointermove', 510, 350))
+  await sleep(100)
+  assert(stageCanvas.classList.contains('panning'), '舞台按下拖拽进入平移状态')
+  assert(stageCanvas.dataset.panX !== '0' || stageCanvas.dataset.panY !== '0', '舞台拖拽更新平移位置')
+  stageCanvas.dispatchEvent(pointerEvent('pointerup', 510, 350))
+  await sleep(100)
+  assert(!stageCanvas.classList.contains('panning'), '舞台松开后结束平移')
+  stageCanvas.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }))
+  await sleep(100)
+  assert(
+    document.querySelector('.zoom-label').textContent === '100%' && stageCanvas.dataset.panX === '0' && stageCanvas.dataset.panY === '0',
+    '舞台双击复位缩放和平移',
+  )
 
   if (!REAL) {
     step('导入 SVP → 选择 track5 → 生成时间轴')
@@ -407,7 +464,21 @@ try {
     clickButton('生成时间轴')
     await waitFor('时间轴生成', () => document.querySelector('.timeline-summary'), 20000)
     assert(bodyText().includes('眨眼'), '时间轴摘要显示眨眼标记数')
-    assert(document.querySelector('.timeline-canvas-wrap canvas'), '时间轴 canvas 渲染')
+    assert(document.querySelector('.multi-timeline-viewport canvas'), '多轨时间轴 canvas 渲染')
+    assert(document.querySelector('.timeline-ruler'), '时间标尺独立渲染')
+    assert(
+      document.querySelector('.multi-timeline-viewport')?.getAttribute('aria-label')?.includes('SVP 原始数据'),
+      '来源轨与动画轨分组显示',
+    )
+    const ctrlWheel = new window.WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      clientX: 500,
+      deltaY: -120,
+    })
+    document.querySelector('.multi-timeline-viewport').dispatchEvent(ctrlWheel)
+    assert(ctrlWheel.defaultPrevented, 'Ctrl+滚轮由时间轴接管，不触发页面缩放')
 
     step('导入音频 → 波形 / BPM')
     setFile('input[accept*="audio"]', makeFile('流沙.wav', 'audio/wav'))
@@ -422,6 +493,13 @@ try {
     setNativeInput(offsetInput, '0')
     await sleep(100)
     assert(bodyText().includes('音频起点'), '显示音频起点说明')
+    const swayControls = document.querySelector('.sway-controls')
+    const swayToggle = swayControls?.querySelector('input[type="checkbox"]')
+    assert(swayControls && swayToggle && !swayToggle.checked, '显示独立摇摆控制且默认关闭')
+    swayToggle.click()
+    await sleep(100)
+    assert(swayToggle.checked && bodyText().includes('频率 (次/拍)') && bodyText().includes('偏移 (拍)'), '摇摆支持幅度、频率和偏移调节')
+    assert(document.querySelector('.multi-timeline-viewport canvas'), '启用摇摆后独立时间轴轨保持渲染')
 
     step('播放 → 时间轴时钟推进')
     const before = document.querySelector('.transport-tc').textContent
@@ -472,7 +550,8 @@ try {
     const frameMatch = /(\d+)\s*帧/.exec(timelineSummary)
     assert(frameMatch && Number(frameMatch[1]) > 10000, `时间轴 ${frameMatch?.[1]} 帧`)
     assert(/眨眼/.test(timelineSummary), '时间轴显示眨眼事件')
-    assert(document.querySelector('.timeline-canvas-wrap canvas'), '时间轴 canvas 渲染')
+    assert(document.querySelector('.multi-timeline-viewport canvas'), '多轨时间轴 canvas 渲染')
+    assert(document.querySelector('.timeline-ruler'), '时间标尺独立渲染')
 
     step('真实时间轴数据 / 渲染性能')
     const svpId = readAssetId('SVP')

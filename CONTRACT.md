@@ -104,20 +104,28 @@ moca-diff/
   "base": {
     "hiddenGroups": ["0.3.1", "0.3.2.0.2", "0.3.3"],
     "hiddenLayers": [],
-    "defaultState": { "mouth": "closed", "eyes": "open", "brow": "neutral", "cheek": "normal" }
+    "defaultState": { "mouth": "closed", "eyes": "open", "brow": "neutral", "cheek": "normal", "sweat": "off", "eyeEffect": "off" }
   },
   "channels": {
     "mouth": { "a": "63", "i": "62", "u": "61", "e": "60", "o": "59", "n": "42", "closed": "44" },
     "eyes":  { "open": "119", "blink": "?,", "smile": "?", "cry": "?" },
     "brow":  { "neutral": "?", "angry": "?", "question": "?", "surprise": "?", "sad": "?" },
-    "cheek": { "normal": "?", "blush": "?", "deep": "?" }
+    "cheek": { "normal": "?", "blush": "?", "deep": "?" },
+    "sweat": { "single": "?", "double": "?", "neck": "?" },
+    "eyeEffect": { "tear": "?", "cry": "?" }
   },
-  "zorder": ["cheek", "mouth", "eyes", "brow"],
+  "mappingSets": { "standard": { "label": "标准", "channels": { "...": "同 channels" } } },
+  "defaultMappingSetId": "standard",
+  "channelDefinitions": {
+    "mouth": { "behavior": "exclusive", "defaultState": "closed" },
+    "sweat": { "behavior": "overlay", "defaultState": "off" }
+  },
+  "zorder": ["cheek", "mouth", "eyes", "brow", "eyeEffect", "sweat"],
   "meta": { "auto": true, "confidence": {"mouth": 0.9}, "warnings": [] }
 }
 ```
 
-只要求 `mouth.a/i/u/e/o/n/closed` 与 `eyes.open/blink` 为必需；其余可选。缺失时前端降级（不切换该通道）。
+`channels` 是当前 Mapping Set 的兼容投影。`mappingSets` 保存方案；切换方案时同步更新 `channels`。`mouth.a/i/u/e/o/n/closed` 与 `eyes.open/blink` 必需，其余可选。`overlay` 通道的 `off` 表示不绘制，不能回退到任意 patch。
 
 ### 4.3 BakeManifest（烘焙结果，前端预览直接消费）
 
@@ -146,7 +154,10 @@ moca-diff/
 {
   "fps": 60,
   "duration": 239.316,
-  "frames": [ { "t": 27.6, "viseme": "a", "openness": 0.95 } ],
+  "mode": { "mappingSetId": "standard", "animationModeId": "natural", "animationModeVersion": 1 },
+  "frames": [ { "t": 27.6, "viseme": "a", "openness": 0.95, "mouthPose": "openLarge", "phase": "sustain" } ],
+  "sourceTracks": { "notes": [], "phonemes": [], "pitch": [] },
+  "tracks": { "mouth": [], "blink": [], "eyes": [], "brow": [], "cheek": [], "sweat": [], "eyeEffect": [] },
   "source": { "kind": "svp", "assetId": "...", "trackIndex": 5 }
 }
 ```
@@ -159,6 +170,8 @@ moca-diff/
 ```
 
 viseme 枚举：`closed | n | f | a | i | u | e | o`。
+
+动画模式：`classic | clear | natural | expressive`。`classic` 保留旧 `frames` 形状；其他模式用 `mouthPose` 表示辅音、起势、音高开度和收势姿态。`frames` / `blinks` 是兼容字段，预览和导出优先消费 `mouthPose` / `tracks`，缺失时回退到旧字段。
 
 ### 4.5 Project
 
@@ -210,7 +223,7 @@ viseme 枚举：`closed | n | f | a | i | u | e | o`。
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
 | POST | `/api/svp/upload` | multipart `file` | `{assetId, filename, version, tracks:[TrackInfo], warnings}` |
-| POST | `/api/svp/{assetId}/timeline` | `{trackIndex:int, fps:int=60}` | `{timeline, blinks, stats, warnings}` |
+| POST | `/api/svp/{assetId}/timeline` | `{trackIndex, fps=60, psdAssetId?, mappingSetId="standard", animationModeId="natural"}` | `{timeline, blinks, stats, warnings}` |
 | POST | `/api/audio/upload` | multipart `file` | `AudioSummary` |
 | GET | `/api/audio/{assetId}/peaks?points=2000` | — | `{points, peaks:[0..1]}` |
 | PUT | `/api/audio/{assetId}/bpm` | `{bpm:float, offsetSec:float=0}` | `{ok:true}` |
@@ -265,13 +278,18 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
 ```json
 {
   "psdAssetId": "a1b2c3d4e5f6",
-  "timeline": {"fps": 60, "duration": 239.3, "frames": [{"t": 0.016, "viseme": "closed"}]},
+  "timeline": {
+    "fps": 60, "duration": 239.3,
+    "frames": [{"t": 0.016, "viseme": "a", "mouthPose": "openLarge"}],
+    "tracks": {"sweat": [{"t": 8.0, "state": "single"}, {"t": 9.0, "state": "off"}]}
+  },
   "blinks": [{"t": 2.0, "duration": 0.15}],
   "startSec": 27.6, "durationSec": 10.0,
   "outFps": 24, "width": 1080,
   "format": "png_zip",           // png_zip | prores4444 | webm_alpha | mp4
   "background": "#101010",       // 仅 mp4
-  "brow": "neutral", "cheek": "normal"
+  "brow": "neutral", "cheek": "normal",
+  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0, "bpm": 76.0, "audioStart": 0.0}
 }
 ```
 
@@ -279,6 +297,8 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
 - 限制：宽度 200–2480、单次 ≤6000 帧、时长 ≤300s。
 - `png_zip` 为 RGBA PNG 序列（FilmCraft 首选）；`prores4444` 为带 alpha 的 MOV；`webm_alpha` 为 VP9 alpha；`mp4` 铺背景色。
 - 后台线程渲染，同一时间 1 个任务；`GET` 轮询进度。
+- 导出按 `mouthPose → viseme → defaultState` 选择口型，并按时间采样动画轨。叠加通道状态为 `off` 时不绘制。
+- `sway` 为可选节奏变换：`amplitude` 为 `0..1` 强度（最大约 4° 左右倾角、2% 纵向拉伸），`frequency` 为每拍循环次数，`offset` 为节拍偏移，`bpm` 与 `audioStart` 用于预览、时间轴和导出采用同一相位公式。启用后围绕立绘底部中心变换，透明画布尺寸不变。
 
 ### 5.7 音频 BPM 说明（补充）
 
@@ -306,7 +326,10 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
   "profile": {"...MappingProfile...": "..."},
   "hiddenGroups": ["0.3.1"], "hiddenLayers": [], "selectedLayerId": "63",
   "svp": {"assetId": "...", "tracks": ["..."]}, "selectedTrack": 5, "fps": 60,
-  "audio": {"assetId": "...", "durationSec": 242.6}, "bpm": 76.0, "offset": 0.0
+  "mappingSetId": "standard", "animationModeId": "natural",
+  "timelineView": {"start": 0.25, "span": 0.5},
+  "audio": {"assetId": "...", "durationSec": 242.6}, "bpm": 76.0, "offset": 0.0,
+  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0}
 }
 ```
 
@@ -323,8 +346,8 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
   3. 按 zorder 绘制 base + patch（`drawImage`，offset 按预览缩放）；
   4. 支持 fit 缩放、背景棋盘格。
 - 播放：`requestAnimationFrame` + `performance.now`；有音频且当前时间落在 `[offset, offset+audioDuration]` 内时以音频时钟为准（`audio.currentTime + offset`），否则用性能时钟；音频可延迟进入或在负时间开始。
-- 时间轴：canvas 或 DOM；显示音频峰值、口型块（按 frames 合并）、眨眼标记、播放头；点击 seek。音频波形可直接拖动来调整音频起点（0.01s 取整，负值合法），点击波形之外仍定位播放头。
-- 时间轴缩放：鼠标滚轮以光标位置为锚点缩放（0.2%–100%），Shift+滚轮平移；头部有 `+` / `−` / `全览` 与缩放百分比；播放时缩放视图自动跟随播放头；缩放只影响显示，不影响导出与时间。
+- 时间轴：固定标尺 + 可纵向滚动的多轨 Canvas；分组显示 SVP 音符/音素/音高、口型/眨眼/眼睛/眉毛/脸颊/汗/眼部效果/摇摆和音频波形。
+- 时间轴交互：`Ctrl+滚轮` 横向缩放、`Shift+滚轮` 横向平移、`Alt+滚轮` 调整轨高；工具栏提供紧凑/标准/展开；分组可折叠。音频波形可拖动调整音频起点。
 - 空状态处理：未导入 PSD/音频/SVP 时界面仍可用，给出下一步引导。
 - 视觉：深色工作室风；CSS 变量；不使用组件库（减少网络依赖）。
 - 必须支持：PSD 自动映射结果展示/修改/保存；SVP 轨道下拉（显示名称/音符数/时长）+ 生成；BPM 输入。

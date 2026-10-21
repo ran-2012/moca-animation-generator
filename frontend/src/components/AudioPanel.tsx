@@ -1,4 +1,4 @@
-import type { AudioSummary } from '../types'
+import type { AudioSummary, SwayConfig } from '../types'
 import { formatDuration } from '../lib/format'
 import { AudioWave } from './AudioWave'
 import { IconClock, IconMusic, IconSave, IconSpinner } from './Icons'
@@ -12,8 +12,10 @@ interface AudioPanelProps {
   duration: number
   bpm: number | null
   offset: number
+  sway: SwayConfig
   onBpm: (value: number | null) => void
   onOffset: (value: number) => void
+  onSway: (value: SwayConfig) => void
   onSaveBpm: () => void
   savingBpm: boolean
   bpmDirty: boolean
@@ -29,8 +31,10 @@ export function AudioPanel({
   duration,
   bpm,
   offset,
+  sway,
   onBpm,
   onOffset,
+  onSway,
   onSaveBpm,
   savingBpm,
   bpmDirty,
@@ -147,6 +151,53 @@ export function AudioPanel({
             <IconClock size={11} />
             音频起点 = 音频 0 秒对应的时间轴位置；<b>负值</b>表示音频从 0 秒之前开始（前奏会被裁掉），
             正值表示音频延后进入。也可直接拖动时间轴上的音频波形调整。
+          </div>
+
+          <div className="sway-controls">
+            <label className="sway-toggle">
+              <input
+                type="checkbox"
+                checked={sway.enabled}
+                disabled={!bpm}
+                onChange={(event) => onSway({ ...sway, enabled: event.target.checked })}
+              />
+              <span>随节奏摇摆</span>
+            </label>
+            <label className="field">
+              <span>幅度 {Math.round(sway.amplitude * 100)}%</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={sway.amplitude}
+                onChange={(event) => onSway({ ...sway, amplitude: Number(event.target.value) })}
+              />
+            </label>
+            <label className="field">
+              <span>频率 (次/拍)</span>
+              <input
+                className="mini-input number"
+                type="number"
+                min="0.125"
+                max="4"
+                step="0.125"
+                value={sway.frequency}
+                onChange={(event) => onSway({ ...sway, frequency: Number(event.target.value) })}
+              />
+            </label>
+            <label className="field">
+              <span>偏移 (拍)</span>
+              <input
+                className="mini-input number"
+                type="number"
+                min="-64"
+                max="64"
+                step="0.125"
+                value={sway.offset}
+                onChange={(event) => onSway({ ...sway, offset: Number(event.target.value) || 0 })}
+              />
+            </label>
           </div>
         </>
       )}

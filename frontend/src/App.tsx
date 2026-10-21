@@ -29,7 +29,7 @@ import { LayerTree } from './components/LayerTree'
 import { MappingPanel } from './components/MappingPanel'
 import type { BakeUiState } from './components/MappingPanel'
 import { Stage } from './components/Stage'
-import { Timeline } from './components/Timeline'
+import { MultiTrackTimeline } from './components/MultiTrackTimeline'
 import { SvpPanel } from './components/SvpPanel'
 import { AudioPanel } from './components/AudioPanel'
 import { ExportPanel } from './components/ExportPanel'
@@ -47,8 +47,19 @@ import {
   IconSpinner,
 } from './components/Icons'
 import { clamp, formatDuration, formatTimecode, isAudioFile, isPsdFile, isSvpFile } from './lib/format'
-import { VISEME_COLORS, VISEMES, VISEME_LABELS, isBlinkActive, opennessAt, visemeAt } from './lib/timeline'
+import { DEFAULT_SWAY, normalizeSway } from './lib/sway'
+import {
+  VISEME_COLORS,
+  VISEMES,
+  VISEME_LABELS,
+  eventStateAt,
+  isBlinkActive,
+  mouthPoseAt,
+  opennessAt,
+  visemeAt,
+} from './lib/timeline'
 import type {
+  AnimationModeId,
   AudioSummary,
   BakeManifest,
   Blink,
@@ -62,6 +73,7 @@ import type {
   Timeline as TimelineData,
   ToastMessage,
   Viseme,
+  SwayConfig,
 } from './types'
 
 const DEFAULT_STATE = { mouth: 'closed', eyes: 'open', brow: 'neutral', cheek: 'normal' }
@@ -132,6 +144,8 @@ export default function App() {
   // SVP / timeline ----------------------------------------------------------
   const [svp, setSvp] = useState<SvpUploadInfo | null>(null)
   const [selectedTrack, setSelectedTrack] = useState<number | null>(null)
+  const [mappingSetId, setMappingSetId] = useState('standard')
+  const [animationModeId, setAnimationModeId] = useState<AnimationModeId>('natural')
   const [generating, setGenerating] = useState(false)
   const [timeline, setTimeline] = useState<TimelineData | null>(null)
   const [blinks, setBlinks] = useState<Blink[]>([])
@@ -145,6 +159,7 @@ export default function App() {
   const [offset, setOffset] = useState(0)
   const [bpmDirty, setBpmDirty] = useState(false)
   const [savingBpm, setSavingBpm] = useState(false)
+  const [sway, setSway] = useState<SwayConfig>(DEFAULT_SWAY)
 
   // playback ----------------------------------------------------------------
   const [playing, setPlaying] = useState(false)
@@ -267,10 +282,14 @@ export default function App() {
       selectedLayerId,
       svp,
       selectedTrack,
+      mappingSetId,
+      animationModeId,
       fps: timeline?.fps ?? TIMELINE_FPS,
+      timelineView,
       audio,
       bpm,
       offset,
+      sway,
       updatedAt: null,
     }),
     [
@@ -283,10 +302,14 @@ export default function App() {
       selectedLayerId,
       svp,
       selectedTrack,
+      mappingSetId,
+      animationModeId,
       timeline?.fps,
+      timelineView,
       audio,
       bpm,
       offset,
+      sway,
     ],
   )
 
@@ -444,10 +467,20 @@ export default function App() {
       setSelectedLayerId(session.selectedLayerId ?? null)
       setSvp(session.svp ?? null)
       setSelectedTrack(session.selectedTrack ?? null)
+      setMappingSetId(session.mappingSetId ?? session.profile?.defaultMappingSetId ?? 'standard')
+      setAnimationModeId(session.animationModeId ?? 'natural')
+      if (session.timelineView) {
+        const span = clamp(session.timelineView.span, 0.002, 1)
+        setTimelineView({
+          start: clamp(session.timelineView.start, 0, 1 - span),
+          span,
+        })
+      }
       setAudio(session.audio ?? null)
       setAudioUrl(session.audio?.assetId ? audioFileUrl(session.audio.assetId) : null)
       setBpm(session.bpm ?? null)
       setOffset(session.offset ?? 0)
+      setSway(normalizeSway(session.sway))
       setBpmDirty(false)
       setStatusText('恢复上次会话…')
 
@@ -476,6 +509,11 @@ export default function App() {
             session.svp.assetId,
             session.selectedTrack,
             session.fps || 60,
+            {
+              psdAssetId: session.psd?.assetId,
+              mappingSetId: session.mappingSetId ?? session.profile?.defaultMappingSetId ?? 'standard',
+              animationModeId: session.animationModeId ?? 'natural',
+            },
           )
           if (cancelled) return
           setTimeline(result.timeline)
@@ -583,6 +621,7 @@ export default function App() {
     setPeaks(null)
     setBpm(null)
     setOffset(0)
+    setSway(DEFAULT_SWAY)
     setBpmDirty(false)
   }, [])
 
@@ -607,6 +646,7 @@ export default function App() {
       audio: null,
       bpm: null,
       offset: 0,
+      sway: DEFAULT_SWAY,
     }
     try {
       window.localStorage.setItem(`mocadiff.session.${currentSlot}`, JSON.stringify(snapshot))
@@ -711,9 +751,12 @@ export default function App() {
         0,
       )
       setProfile(result.profile)
+      setMappingSetId(result.profile.defaultMappingSetId ?? 'standard')
       setAutomapWarnings(result.warnings)
       setHiddenGroups(new Set(result.profile.base.hiddenGroups))
       setHiddenLayers(new Set(result.profile.base.hiddenLayers))
+      setManifest(null)
+      setBakeState({ status: 'idle' })
       setDirty(true)
       setStatusText(`自动识别完成 · 已填充 ${slots} 个槽位，请确认后保存`)
       notify('success', `自动识别完成，填充 ${slots} 个语义槽位`)
@@ -731,9 +774,39 @@ export default function App() {
       const values = { ...(channels[channel] as Record<string, string | null>) }
       values[slot] = layerId || null
       channels[channel] = values as never
-      return { ...current, channels }
+      const mappingSets = current.mappingSets
+        ? {
+            ...current.mappingSets,
+            [mappingSetId]: {
+              ...(current.mappingSets[mappingSetId] ?? { label: mappingSetId, channels }),
+              channels,
+            },
+          }
+        : current.mappingSets
+      return { ...current, channels, mappingSets }
     })
+    setManifest(null)
+    setBakeState({ status: 'idle' })
     setDirty(true)
+  }, [mappingSetId])
+
+  const handleMappingSetChange = useCallback((value: string) => {
+    setProfile((current) => {
+      const mappingSet = current?.mappingSets?.[value]
+      if (!current || !mappingSet) return current
+      return {
+        ...current,
+        channels: mappingSet.channels,
+        defaultMappingSetId: value,
+      }
+    })
+    setMappingSetId(value)
+    setManifest(null)
+    setBakeState({ status: 'idle' })
+    setDirty(true)
+    setTimeline(null)
+    setBlinks([])
+    setTimelineWarnings([])
   }, [])
 
   const updateDefaultState = useCallback((channel: ChannelName, value: string) => {
@@ -742,6 +815,8 @@ export default function App() {
         ? { ...current, base: { ...current.base, defaultState: { ...current.base.defaultState, [channel]: value } } }
         : current,
     )
+    setManifest(null)
+    setBakeState({ status: 'idle' })
     setDirty(true)
   }, [])
 
@@ -752,6 +827,8 @@ export default function App() {
       else next.add(path)
       setHiddenGroups(next)
       setProfile((current) => (current ? { ...current, base: { ...current.base, hiddenGroups: [...next] } } : current))
+      setManifest(null)
+      setBakeState({ status: 'idle' })
       setDirty(true)
     },
     [hiddenGroups],
@@ -764,6 +841,8 @@ export default function App() {
       else next.add(id)
       setHiddenLayers(next)
       setProfile((current) => (current ? { ...current, base: { ...current.base, hiddenLayers: [...next] } } : current))
+      setManifest(null)
+      setBakeState({ status: 'idle' })
       setDirty(true)
     },
     [hiddenLayers],
@@ -850,7 +929,11 @@ export default function App() {
     setGenerating(true)
     setStatusText(`生成时间轴 · 轨道 #${selectedTrack}…`)
     try {
-      const result = await generateTimeline(svp.assetId, selectedTrack, TIMELINE_FPS)
+      const result = await generateTimeline(svp.assetId, selectedTrack, TIMELINE_FPS, {
+        psdAssetId: psd?.assetId,
+        mappingSetId,
+        animationModeId,
+      })
       setTimeline(result.timeline)
       setBlinks(result.blinks)
       setTimelineWarnings(result.warnings ?? [])
@@ -866,7 +949,7 @@ export default function App() {
     } finally {
       setGenerating(false)
     }
-  }, [notify, reportError, selectedTrack, svp])
+  }, [animationModeId, mappingSetId, notify, psd?.assetId, reportError, selectedTrack, svp])
 
   // audio flows -------------------------------------------------------------
   const handleAudioFile = useCallback(
@@ -940,16 +1023,13 @@ export default function App() {
 
   // Keep a zoomed view following the playhead while playing.
   useEffect(() => {
-    if (!playing) return
-    setTimelineView((current) => {
-      if (current.span >= 0.999 || duration <= 0) return current
-      const fraction = time / duration
-      const edge = current.start + current.span
-      if (fraction >= current.start && fraction <= edge) return current
-      const start = clamp(fraction - current.span * 0.25, 0, 1 - current.span)
-      return { start, span: current.span }
-    })
-  }, [duration, playing, time])
+    if (!playing || timelineView.span >= 0.999 || duration <= 0) return
+    const fraction = time / duration
+    const edge = timelineView.start + timelineView.span
+    if (fraction >= timelineView.start && fraction <= edge) return
+    const start = clamp(fraction - timelineView.span * 0.25, 0, 1 - timelineView.span)
+    setTimelineView({ start, span: timelineView.span })
+  }, [duration, playing, time, timelineView])
 
   const handleSaveBpm = useCallback(async () => {
     if (!audio || bpm == null) {
@@ -1140,13 +1220,23 @@ export default function App() {
 
   // derived stage state -----------------------------------------------------
   const stageState = useMemo<StageState>(
-    () => ({
-      viseme: (timeline ? visemeAt(timeline.frames, time, defaultState.mouth as Viseme) : defaultState.mouth) as Viseme,
-      blink: isBlinkActive(blinks, time),
-      brow: defaultState.brow,
-      cheek: defaultState.cheek,
-      openness: timeline ? opennessAt(timeline.frames, time) : 0,
-    }),
+    () => {
+      const channels = Object.fromEntries(
+        Object.entries(timeline?.tracks ?? {})
+          .filter(([channel]) => !['mouth', 'blink'].includes(channel))
+          .map(([channel, events]) => [channel, eventStateAt(events, time)])
+          .filter((entry): entry is [string, string] => Boolean(entry[1])),
+      )
+      return {
+        viseme: (timeline ? visemeAt(timeline.frames, time, defaultState.mouth as Viseme) : defaultState.mouth) as Viseme,
+        mouthPose: timeline ? mouthPoseAt(timeline.frames, time) : undefined,
+        blink: isBlinkActive(blinks, time),
+        brow: channels.brow ?? defaultState.brow,
+        cheek: channels.cheek ?? defaultState.cheek,
+        openness: timeline ? opennessAt(timeline.frames, time) : 0,
+        channels,
+      }
+    },
     [blinks, defaultState, time, timeline],
   )
 
@@ -1329,6 +1419,9 @@ export default function App() {
             time={time}
             duration={duration}
             fps={fps}
+            bpm={bpm}
+            sway={sway}
+            audioStart={offset}
             loading={bakeState.status === 'loading'}
             loadingLabel="烘焙中"
             onImportPsd={openPsdPicker}
@@ -1357,6 +1450,13 @@ export default function App() {
             timelineDuration={timeline?.duration ?? 0}
             blinksCount={blinks.length}
             warnings={timelineWarnings}
+            mappingSetId={mappingSetId}
+            mappingSets={Object.entries(profile?.mappingSets ?? { standard: { label: '标准', channels: profile?.channels } }).map(
+              ([id, item]) => ({ id, label: item.label }),
+            )}
+            animationModeId={animationModeId}
+            onMappingSetChange={handleMappingSetChange}
+            onAnimationModeChange={setAnimationModeId}
           />
 
           <AudioPanel
@@ -1368,6 +1468,7 @@ export default function App() {
             duration={duration}
             bpm={bpm}
             offset={offset}
+            sway={sway}
             onBpm={(value) => {
               setBpm(value)
               setBpmDirty(true)
@@ -1376,6 +1477,7 @@ export default function App() {
               setOffset(value)
               setBpmDirty(true)
             }}
+            onSway={(value) => setSway(normalizeSway(value))}
             onSaveBpm={() => void handleSaveBpm()}
             savingBpm={savingBpm}
             bpmDirty={bpmDirty}
@@ -1447,7 +1549,7 @@ export default function App() {
               </button>
             </div>
           </div>
-          <Timeline
+          <MultiTrackTimeline
             timeline={timeline}
             blinks={blinks}
             peaks={peaks}
@@ -1456,6 +1558,7 @@ export default function App() {
             bpm={bpm}
             audioStart={offset}
             audioDuration={audio?.durationSec ?? 0}
+            sway={sway}
             viewStartFrac={timelineView.start}
             viewSpanFrac={timelineView.span}
             onSeek={seek}
@@ -1546,6 +1649,9 @@ export default function App() {
         defaultBrow={defaultState.brow}
         defaultCheek={defaultState.cheek}
         mockMode={mockMode}
+        sway={sway}
+        bpm={bpm}
+        audioStart={offset}
         onNotify={notify}
       />
     </div>

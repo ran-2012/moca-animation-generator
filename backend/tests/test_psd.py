@@ -208,7 +208,7 @@ def test_automap_identifies_moca_channels() -> None:
     profile = result["profile"]
     channels = profile["channels"]
 
-    assert channels["mouth"] == {
+    expected_mouth = {
         "a": "63",
         "i": "62",
         "u": "61",
@@ -216,7 +216,16 @@ def test_automap_identifies_moca_channels() -> None:
         "o": "59",
         "n": "42",
         "closed": "44",
+        "narrow": "42",
+        "pressed": "49",
+        "roundSmall": "43",
+        "aSoft": "58",
+        "wide": "41",
+        "openLarge": "193",
+        "openXLarge": "192",
+        "scream": "55",
     }
+    assert {key: channels["mouth"].get(key) for key in expected_mouth} == expected_mouth
     assert channels["eyes"] == {"open": "119", "blink": "137", "smile": "136", "cry": "134"}
     assert channels["brow"] == {
         "neutral": "140",
@@ -226,6 +235,10 @@ def test_automap_identifies_moca_channels() -> None:
         "sad": "144",
     }
     assert channels["cheek"] == {"normal": "32", "blush": "33", "deep": "34"}
+    assert channels["sweat"] == {"single": "38", "double": "36", "neck": "37"}
+    assert channels["eyeEffect"] == {"tear": "124", "cry": "125"}
+    assert profile["defaultMappingSetId"] == "standard"
+    assert profile["mappingSets"]["standard"]["channels"] == channels
 
     # names of the mapped layers, looked up through the tree (guard against id drift)
     expected_names = {
@@ -242,11 +255,17 @@ def test_automap_identifies_moca_channels() -> None:
         "mouth": "closed",
         "eyes": "open",
         "brow": "neutral",
+        "eyeEffect": "off",
+        "sweat": "off",
     }
-    assert set(profile["base"]["hiddenGroups"]) == {"0.3.1", "0.3.2", "0.3.3", "0.3.0.0"}
-    assert profile["zorder"] == ["cheek", "mouth", "eyes", "brow"]
+    assert set(profile["base"]["hiddenGroups"]) == {
+        "0.3.1", "0.3.2", "0.3.3", "0.3.0.0", "0.3.0.1", "0.3.2.0.3",
+    }
+    assert profile["zorder"] == ["cheek", "mouth", "eyes", "brow", "eyeEffect", "sweat"]
     assert profile["meta"]["auto"] is True
-    assert set(profile["meta"]["confidence"]) == {"mouth", "eyes", "brow", "cheek"}
+    assert set(profile["meta"]["confidence"]) == {
+        "mouth", "eyes", "brow", "cheek", "sweat", "eyeEffect",
+    }
     assert result["warnings"] == []
 
 
@@ -316,7 +335,7 @@ def test_bake_creates_base_and_patches() -> None:
     assert manifest["assetId"] == asset_id
     assert manifest["width"] == 2480 and manifest["height"] == 3500
     assert manifest["base"]["url"] == f"/media/psd/{asset_id}/cache/base.png"
-    assert manifest["zorder"] == ["cheek", "mouth", "eyes", "brow"]
+    assert manifest["zorder"] == ["cheek", "mouth", "eyes", "brow", "eyeEffect", "sweat"]
     assert len(manifest["profileVersion"]) == 40
     int(manifest["profileVersion"], 16)
     assert manifest["bakedAt"].endswith("Z")

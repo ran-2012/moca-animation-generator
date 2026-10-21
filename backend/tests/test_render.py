@@ -510,11 +510,13 @@ def _tiny_assets() -> render_service.PreparedAssets:
         patches={
             "mouth.closed": (transparent, (0, 0)),
             "mouth.a": (Image.new("RGBA", (2, 2), (255, 0, 0, 255)), (0, 0)),
+            "mouth.openLarge": (Image.new("RGBA", (2, 2), (255, 255, 0, 255)), (0, 0)),
             "eyes.open": (Image.new("RGBA", (2, 2), (0, 255, 0, 255)), (5, 5)),
             "eyes.blink": (Image.new("RGBA", (2, 2), (0, 0, 255, 255)), (5, 5)),
+            "sweat.drop": (Image.new("RGBA", (1, 1), (0, 255, 255, 255)), (9, 0)),
         },
-        zorder=["mouth", "eyes"],
-        default_state={"mouth": "closed", "eyes": "open"},
+        zorder=["mouth", "eyes", "sweat"],
+        default_state={"mouth": "closed", "eyes": "open", "sweat": "off"},
         source_width=10,
         source_height=10,
     )
@@ -559,6 +561,69 @@ def test_frame_source_viseme_and_blink_selection() -> None:
     assert composed.mode == "RGBA" and composed.size == (10, 10)
     assert composed.getpixel((0, 0)) == (255, 0, 0, 255)
     assert composed.getpixel((5, 5)) == (0, 255, 0, 255)
+
+
+def test_frame_source_uses_mouth_pose_and_animation_tracks() -> None:
+    assets = _tiny_assets()
+    timeline = {
+        "frames": [
+            {"t": 0.0, "viseme": "a", "mouthPose": "openLarge"},
+            {"t": 1.0, "viseme": "a", "mouthPose": "wide"},
+        ],
+        "tracks": {
+            "sweat": [
+                {"t": 0.0, "state": "off"},
+                {"t": 0.5, "state": "drop"},
+                {"t": 1.5, "state": "off"},
+            ],
+        },
+    }
+    source = render_service.FrameSource(timeline, [], assets)
+
+    assert source.state_at(0.0)["mouth"] == "mouth.openLarge"
+    assert "sweat" not in source.state_at(0.0)
+    assert source.state_at(0.75)["sweat"] == "sweat.drop"
+    assert source.state_at(1.0)["mouth"] == "mouth.a"
+    assert "sweat" not in source.state_at(1.5)
+
+    no_effects = render_service.FrameSource({"frames": timeline["frames"]}, [], assets)
+    assert "sweat" not in no_effects.state_at(0.0)
+
+    delayed_effect = render_service.FrameSource({
+        "frames": timeline["frames"],
+        "tracks": {"sweat": [{"t": 1.0, "state": "drop"}]},
+    }, [], assets)
+    assert "sweat" not in delayed_effect.state_at(0.5)
+    assert delayed_effect.state_at(1.0)["sweat"] == "sweat.drop"
+
+
+def test_frame_source_applies_beat_sway_without_changing_canvas_size() -> None:
+    assets = _tiny_assets()
+    assets.base.putpixel((2, 2), (255, 255, 255, 255))
+    timeline = {"frames": [{"t": 0.0, "viseme": "closed"}]}
+    disabled = render_service.FrameSource(timeline, [], assets)
+    enabled = render_service.FrameSource(
+        timeline,
+        [],
+        assets,
+        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offset": 0, "bpm": 120},
+    )
+
+    assert disabled.compose(0.25).tobytes() == disabled.compose_state(disabled.state_at(0.25)).tobytes()
+    moved = enabled.compose(0.25)
+    assert moved.size == (10, 10)
+    assert moved.tobytes() != enabled.compose_state(enabled.state_at(0.25)).tobytes()
+
+    edge_assets = _tiny_assets()
+    edge_assets.base = Image.new("RGBA", (10, 10), (255, 255, 255, 255))
+    edge_source = render_service.FrameSource(
+        timeline,
+        [],
+        edge_assets,
+        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offset": 0, "bpm": 120},
+    )
+    edge_frame = edge_source.compose(0.25)
+    assert edge_frame.getbbox() == (0, 0, 10, 10)
 
 
 def test_ffmpeg_command_flags() -> None:

@@ -40,9 +40,13 @@ def test_session_roundtrip_and_clear():
             selectedLayerId="63",
             svp={"assetId": "svp123", "tracks": [{"index": 5, "name": "未命名音轨"}]},
             selectedTrack=5,
+            mappingSetId="soft",
+            animationModeId="expressive",
+            timelineView={"start": 0.25, "span": 0.5},
             audio={"assetId": "aud123", "durationSec": 242.6},
             bpm=76.0,
             offset=0.25,
+            sway={"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offset": 0.25},
         )
         saved_at = session_service.save(state)
         assert saved_at
@@ -53,8 +57,13 @@ def test_session_roundtrip_and_clear():
         assert loaded.projectName == "测试项目"
         assert loaded.psd and loaded.psd["assetId"] == "abc123"
         assert loaded.selectedTrack == 5
+        assert loaded.mappingSetId == "soft"
+        assert loaded.animationModeId == "expressive"
+        assert loaded.timelineView == {"start": 0.25, "span": 0.5}
         assert loaded.bpm == 76.0
         assert loaded.offset == 0.25
+        assert loaded.sway is not None
+        assert loaded.sway.model_dump() == {"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offset": 0.25}
         assert loaded.hiddenGroups == ["0.3.1"]
         assert loaded.updatedAt == saved_at
 

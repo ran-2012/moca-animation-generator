@@ -32,7 +32,14 @@ async def upload_svp(file: UploadFile = File(...)) -> dict:
 @router.post("/svp/{asset_id}/timeline", response_model=TimelineResponse)
 async def svp_timeline(asset_id: str, body: TimelineRequest) -> dict:
     try:
-        return svp_service.generate_timeline(asset_id, body.track_index, body.fps)
+        return svp_service.generate_timeline(
+            asset_id,
+            body.track_index,
+            body.fps,
+            psd_asset_id=body.psd_asset_id,
+            mapping_set_id=body.mapping_set_id,
+            animation_mode_id=body.animation_mode_id,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ValueError, IndexError) as exc:

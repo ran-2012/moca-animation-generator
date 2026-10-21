@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { BakeManifest, DefaultState, StageState } from '../types'
 import { VISEME_COLORS, VISEME_LABELS } from '../lib/timeline'
 import { formatTimecode } from '../lib/format'
+import { swaySafetyScale, swayTransform } from '../lib/sway'
 import { IconFit, IconImage, IconSpinner, IconZoomIn, IconZoomOut } from './Icons'
 
 interface StageProps {
@@ -11,6 +13,9 @@ interface StageProps {
   time: number
   duration: number
   fps: number
+  bpm: number | null
+  sway: import('../types').SwayConfig
+  audioStart: number
   loading: boolean
   loadingLabel: string
   onImportPsd: () => void
@@ -19,6 +24,11 @@ interface StageProps {
 interface Size {
   width: number
   height: number
+}
+
+interface Point {
+  x: number
+  y: number
 }
 
 const CHECKER_LIGHT = '#1b202b'
@@ -30,7 +40,7 @@ function pickPatchUrl(manifest: BakeManifest, channel: string, value: string): s
   return null
 }
 
-export function Stage({ manifest, defaultState, state, time, duration, fps, loading, loadingLabel, onImportPsd }: StageProps) {
+export function Stage({ manifest, defaultState, state, time, duration, fps, bpm, sway, audioStart, loading, loadingLabel, onImportPsd }: StageProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const imagesRef = useRef<Map<string, HTMLImageElement>>(new Map())
@@ -39,6 +49,9 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
   const [imagesVersion, setImagesVersion] = useState(0)
   const [imagesReady, setImagesReady] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState<Point>({ x: 0, y: 0 })
+  const [panning, setPanning] = useState(false)
+  const panDragRef = useRef<{ x: number; y: number; pan: Point } | null>(null)
   const [checker, setChecker] = useState(true)
 
   // keep the canvas backing store in sync with the layout box
@@ -89,9 +102,72 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
     }
   }, [manifest])
 
-  const zoomTo = useCallback((next: number) => {
-    setZoom(Math.min(4, Math.max(0.15, Math.round(next * 100) / 100)))
+  const clampPan = useCallback((next: Point, nextZoom = zoom): Point => {
+    if (!manifest || size.width <= 0 || size.height <= 0) return { x: 0, y: 0 }
+    const fitScale = Math.min((size.width - 64) / manifest.width, (size.height - 64) / manifest.height)
+    const scale = Math.max(0.02, fitScale * nextZoom * swaySafetyScale(sway))
+    const imageWidth = manifest.width * scale
+    const imageHeight = manifest.height * scale
+    const margin = 32
+    return {
+      x: Math.min(size.width - margin - (size.width - imageWidth) / 2, Math.max(margin - (size.width + imageWidth) / 2, next.x)),
+      y: Math.min(size.height - margin - (size.height - imageHeight) / 2, Math.max(margin - (size.height + imageHeight) / 2, next.y)),
+    }
+  }, [manifest, size, sway, zoom])
+
+  const zoomTo = useCallback((next: number, anchor?: Point) => {
+    const value = Math.min(4, Math.max(0.15, Math.round(next * 100) / 100))
+    setPan((current) => {
+      if (!anchor || zoom <= 0) return clampPan(current, value)
+      const center = { x: size.width / 2, y: size.height / 2 }
+      const ratio = value / zoom
+      return clampPan({
+        x: anchor.x - center.x - (anchor.x - center.x - current.x) * ratio,
+        y: anchor.y - center.y - (anchor.y - center.y - current.y) * ratio,
+      }, value)
+    })
+    setZoom(value)
+  }, [clampPan, size, zoom])
+
+  const resetView = useCallback(() => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
   }, [])
+
+  const wheel = useCallback((event: WheelEvent) => {
+    if (!manifest) return
+    event.preventDefault()
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const factor = Math.exp(-event.deltaY * 0.0015)
+    zoomTo(zoom * factor, { x: event.clientX - rect.left, y: event.clientY - rect.top })
+  }, [manifest, zoom, zoomTo])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.addEventListener('wheel', wheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', wheel)
+  }, [wheel])
+
+  const pointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!manifest || event.button !== 0) return
+    panDragRef.current = { x: event.clientX, y: event.clientY, pan }
+    setPanning(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const pointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const drag = panDragRef.current
+    if (!drag) return
+    setPan(clampPan({ x: drag.pan.x + event.clientX - drag.x, y: drag.pan.y + event.clientY - drag.y }))
+  }
+
+  const pointerEnd = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    panDragRef.current = null
+    setPanning(false)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+  }
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current
@@ -138,9 +214,18 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
     if (!base || base.naturalWidth === 0) return
 
     const fitScale = Math.min((width - 64) / manifest.width, (height - 64) / manifest.height)
-    const scale = Math.max(0.02, fitScale * zoom)
-    const offsetX = (width - manifest.width * scale) / 2
-    const offsetY = (height - manifest.height * scale) / 2
+    const scale = Math.max(0.02, fitScale * zoom * swaySafetyScale(sway))
+    const offsetX = (width - manifest.width * scale) / 2 + pan.x
+    const offsetY = (height - manifest.height * scale) / 2 + pan.y
+    const motion = swayTransform(time, bpm, sway, audioStart)
+    const pivotX = offsetX + manifest.width * scale / 2
+    const pivotY = offsetY + manifest.height * scale
+
+    ctx.save()
+    ctx.translate(pivotX, pivotY)
+    ctx.rotate(motion.angle)
+    ctx.scale(1, motion.scaleY)
+    ctx.translate(-pivotX, -pivotY)
 
     // subtle drop shadow so the cut-out reads against the checkerboard
     ctx.save()
@@ -151,8 +236,8 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
     ctx.restore()
 
     const channelValue: Record<string, string> = {
-      mouth: state.viseme,
-      eyes: state.blink ? 'blink' : 'open',
+      ...state.channels,
+      eyes: state.blink ? 'blink' : state.channels.eyes,
       brow: state.brow,
       cheek: state.cheek,
     }
@@ -165,13 +250,12 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
 
     const order = manifest.zorder.length > 0 ? manifest.zorder : ['cheek', 'mouth', 'eyes', 'brow']
     for (const channel of order) {
-      const value = channelValue[channel] ?? fallback[channel] ?? 'normal'
-      let patchKey = `${channel}.${value}`
-      let patch = manifest.patches[patchKey]
-      if (!patch) {
-        patchKey = `${channel}.${fallback[channel] ?? ''}`
-        patch = manifest.patches[patchKey]
-      }
+      const wanted = channel === 'mouth' ? [state.mouthPose, state.viseme] : [channelValue[channel]]
+      if (wanted[0] === 'off') continue
+      const values = [...wanted, fallback[channel]].filter((value): value is string => Boolean(value))
+      const patchKey = values.map((value) => `${channel}.${value}`).find((key) => manifest.patches[key])
+      if (!patchKey) continue
+      const patch = manifest.patches[patchKey]
       if (!patch) continue
       const image = imagesRef.current.get(patchKey)
       if (!image || image.naturalWidth === 0) continue
@@ -185,6 +269,7 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
         patchHeight * scale,
       )
     }
+    ctx.restore()
 
     // frame corners for a "studio monitor" feel
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
@@ -203,7 +288,7 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
       ctx.lineTo(cx, cy + dy * corner)
       ctx.stroke()
     }
-  }, [checker, defaultState, imagesReady, manifest, size, state, zoom])
+  }, [audioStart, bpm, checker, defaultState, imagesReady, manifest, pan, size, state, sway, time, zoom])
 
   useEffect(() => {
     draw()
@@ -224,10 +309,22 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, load
 
   return (
     <div className="stage" ref={containerRef}>
-      <canvas ref={canvasRef} className="stage-canvas" style={{ width: '100%', height: '100%' }} />
+      <canvas
+        ref={canvasRef}
+        className={`stage-canvas ${panning ? 'panning' : ''}`}
+        style={{ width: '100%', height: '100%' }}
+        aria-label="预览舞台：拖拽平移，滚轮缩放，双击复位"
+        data-pan-x={Math.round(pan.x)}
+        data-pan-y={Math.round(pan.y)}
+        onPointerDown={pointerDown}
+        onPointerMove={pointerMove}
+        onPointerUp={pointerEnd}
+        onPointerCancel={pointerEnd}
+        onDoubleClick={resetView}
+      />
 
       <div className="stage-toolbar">
-        <button className="icon-btn" title="适配窗口" onClick={() => zoomTo(1)}>
+        <button className="icon-btn" title="适配窗口并复位平移" onClick={resetView}>
           <IconFit />
         </button>
         <button className="icon-btn" title="缩小" onClick={() => zoomTo(zoom - 0.1)}>

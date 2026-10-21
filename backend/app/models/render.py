@@ -31,6 +31,15 @@ class TimelineFrameIn(BaseModel):
     t: float = Field(ge=0)
     viseme: Viseme = "closed"
     openness: float | None = Field(default=None, ge=0, le=1)
+    mouthPose: str | None = None
+    phase: str | None = None
+    noteIndex: int | None = None
+
+
+class TimelineEventIn(BaseModel):
+    t: float = Field(ge=0)
+    state: str | None = None
+    duration: float | None = Field(default=None, ge=0)
 
 
 class TimelineIn(BaseModel):
@@ -39,11 +48,21 @@ class TimelineIn(BaseModel):
     fps: float = Field(default=60.0, ge=1, le=240)
     duration: float = Field(default=0.0, ge=0)
     frames: list[TimelineFrameIn] = Field(default_factory=list, max_length=MAX_TIMELINE_FRAMES)
+    tracks: dict[str, list[TimelineEventIn]] = Field(default_factory=dict)
 
 
 class BlinkIn(BaseModel):
     t: float = Field(ge=0)
     duration: float = Field(default=0.15, gt=0, le=5.0)
+
+
+class SwayIn(BaseModel):
+    enabled: bool = False
+    amplitude: float = Field(default=0.35, ge=0, le=1)
+    frequency: float = Field(default=0.5, ge=0.125, le=4)
+    offset: float = Field(default=0.0, ge=-64, le=64)
+    bpm: float | None = Field(default=None, gt=0, le=1000)
+    audioStart: float = Field(default=0.0, ge=-300, le=300)
 
 
 class RenderRequest(BaseModel):
@@ -60,6 +79,7 @@ class RenderRequest(BaseModel):
     # Optional fixed expression overrides; otherwise manifest defaultState wins.
     brow: str | None = None
     cheek: str | None = None
+    sway: SwayIn | None = None
 
 
 class RenderJobInfo(BaseModel):

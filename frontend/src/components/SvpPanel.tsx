@@ -1,4 +1,4 @@
-import type { SvpUploadInfo } from '../types'
+import type { AnimationModeId, SvpUploadInfo } from '../types'
 import { formatDuration } from '../lib/format'
 import { IconAlert, IconFilm, IconSpinner } from './Icons'
 
@@ -14,6 +14,11 @@ interface SvpPanelProps {
   timelineDuration: number
   blinksCount: number
   warnings: string[]
+  mappingSetId: string
+  mappingSets: Array<{ id: string; label: string }>
+  animationModeId: AnimationModeId
+  onMappingSetChange: (value: string) => void
+  onAnimationModeChange: (value: AnimationModeId) => void
 }
 
 export function SvpPanel({
@@ -28,6 +33,11 @@ export function SvpPanel({
   timelineDuration,
   blinksCount,
   warnings,
+  mappingSetId,
+  mappingSets,
+  animationModeId,
+  onMappingSetChange,
+  onAnimationModeChange,
 }: SvpPanelProps) {
   return (
     <section className="panel svp-panel">
@@ -108,6 +118,25 @@ export function SvpPanel({
           )}
 
           <div className="btn-row">
+            <label className="default-item">
+              <span>素材方案</span>
+              <select className="select" value={mappingSetId} onChange={(event) => onMappingSetChange(event.target.value)}>
+                {mappingSets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              </select>
+            </label>
+            <label className="default-item">
+              <span>动画模式</span>
+              <select
+                className="select"
+                value={animationModeId}
+                onChange={(event) => onAnimationModeChange(event.target.value as AnimationModeId)}
+              >
+                <option value="classic">经典</option>
+                <option value="clear">清晰发音</option>
+                <option value="natural">自然</option>
+                <option value="expressive">夸张</option>
+              </select>
+            </label>
             <button
               className="btn primary wide"
               onClick={onGenerate}

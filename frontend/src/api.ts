@@ -167,11 +167,13 @@ function normalizeTree(node: LayerNode | null | undefined): LayerNode {
   }
 }
 
-const DEFAULT_CHANNEL_KEYS: Record<keyof Channels, string[]> = {
-  mouth: ['a', 'i', 'u', 'e', 'o', 'n', 'closed'],
+const DEFAULT_CHANNEL_KEYS: Record<string, string[]> = {
+  mouth: ['a', 'i', 'u', 'e', 'o', 'n', 'closed', 'narrow', 'pressed', 'roundSmall', 'aSoft', 'wide', 'openLarge', 'openXLarge', 'scream'],
   eyes: ['open', 'blink', 'smile', 'cry'],
   brow: ['neutral', 'angry', 'question', 'surprise', 'sad'],
   cheek: ['normal', 'blush', 'deep'],
+  sweat: ['single', 'double', 'neck'],
+  eyeEffect: ['tear', 'cry'],
 }
 
 function normalizeProfile(input: MappingProfile | null | undefined, assetId: string): MappingProfile {
@@ -179,14 +181,16 @@ function normalizeProfile(input: MappingProfile | null | undefined, assetId: str
   const base = raw.base ?? { hiddenGroups: [], hiddenLayers: [], defaultState: {} }
   const defaultState = (base.defaultState ?? {}) as Partial<MappingProfile['base']['defaultState']>
   const channels = {} as Channels
-  for (const channel of Object.keys(DEFAULT_CHANNEL_KEYS) as Array<keyof Channels>) {
+  const channelNames = new Set([...Object.keys(DEFAULT_CHANNEL_KEYS), ...Object.keys(raw.channels ?? {})])
+  for (const channel of channelNames) {
     const source = (raw.channels?.[channel] ?? {}) as Record<string, unknown>
     const target: Record<string, string | null> = {}
-    for (const key of DEFAULT_CHANNEL_KEYS[channel]) {
+    const keys = new Set([...(DEFAULT_CHANNEL_KEYS[channel] ?? []), ...Object.keys(source)])
+    for (const key of keys) {
       const value = source[key]
       target[key] = typeof value === 'string' && value ? value : null
     }
-    channels[channel] = target as never
+    channels[channel] = target
   }
   const canvas = Array.isArray(raw.canvas) ? raw.canvas : [0, 0]
   return {
@@ -200,9 +204,14 @@ function normalizeProfile(input: MappingProfile | null | undefined, assetId: str
         eyes: String(defaultState.eyes ?? 'open'),
         brow: String(defaultState.brow ?? 'neutral'),
         cheek: String(defaultState.cheek ?? 'normal'),
+        sweat: String(defaultState.sweat ?? 'off'),
+        eyeEffect: String(defaultState.eyeEffect ?? 'off'),
       },
     },
     channels,
+    mappingSets: raw.mappingSets as MappingProfile['mappingSets'],
+    defaultMappingSetId: String(raw.defaultMappingSetId ?? 'standard'),
+    channelDefinitions: raw.channelDefinitions,
     zorder: Array.isArray(raw.zorder) && raw.zorder.length > 0 ? raw.zorder.map(String) : ['cheek', 'mouth', 'eyes', 'brow'],
     meta: {
       auto: raw.meta?.auto ?? false,
@@ -250,6 +259,9 @@ function normalizeFrame(raw: TimelineFrame, fallbackTime: number): TimelineFrame
     t: asNumber(raw.t, fallbackTime),
     viseme: viseme as Viseme,
     openness: raw.openness == null ? undefined : asNumber(raw.openness),
+    mouthPose: raw.mouthPose == null ? undefined : String(raw.mouthPose),
+    phase: raw.phase == null ? undefined : String(raw.phase),
+    noteIndex: raw.noteIndex == null ? null : asNumber(raw.noteIndex),
   }
 }
 
@@ -268,6 +280,9 @@ function normalizeTimeline(raw: Timeline | null | undefined, fallbackFps: number
       assetId: String(timeline.source?.assetId ?? ''),
       trackIndex: asNumber(timeline.source?.trackIndex),
     },
+    mode: timeline.mode,
+    sourceTracks: timeline.sourceTracks,
+    tracks: timeline.tracks,
   }
 }
 
@@ -370,9 +385,14 @@ export async function uploadSvp(file: File): Promise<SvpUploadInfo> {
   }
 }
 
-export async function generateTimeline(assetId: string, trackIndex: number, fps = 60): Promise<TimelineResult> {
+export async function generateTimeline(
+  assetId: string,
+  trackIndex: number,
+  fps = 60,
+  options: { psdAssetId?: string; mappingSetId?: string; animationModeId?: import('./types').AnimationModeId } = {},
+): Promise<TimelineResult> {
   if (mockEnabled) {
-    const result = await callMock(() => mock.generateTimeline(assetId, trackIndex, fps))
+    const result = await callMock(() => mock.generateTimeline(assetId, trackIndex, fps, options))
     return {
       timeline: normalizeTimeline(result.timeline, fps),
       blinks: normalizeBlinks(result.blinks),
@@ -380,7 +400,7 @@ export async function generateTimeline(assetId: string, trackIndex: number, fps 
       warnings: result.warnings ?? [],
     }
   }
-  const raw = await request<TimelineResult>(`/api/svp/${assetId}/timeline`, jsonInit({ trackIndex, fps }))
+  const raw = await request<TimelineResult>(`/api/svp/${assetId}/timeline`, jsonInit({ trackIndex, fps, ...options }))
   if (!raw) throw new ApiError('时间轴生成失败：后端返回空响应')
   return {
     timeline: normalizeTimeline(raw.timeline, fps),

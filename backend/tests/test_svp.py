@@ -91,6 +91,24 @@ def _asset_id() -> str:
     return _env()["assetId"]
 
 
+def test_kana_lyrics_map_to_phonemes():
+    cases = {
+        "る": (["r", "u"], "u"),
+        "カ": (["k", "a"], "a"),
+        "しゃ": (["sh", "a"], "a"),
+        "ヴォ": (["v", "o"], "o"),
+        "ん": (["n"], "n"),
+        "っ": (["cl"], "closed"),
+    }
+    for lyric, (symbols, viseme) in cases.items():
+        plan = svp_service.lyric_to_plan(lyric, language="japanese")
+        assert plan["method"] == "kana"
+        assert [phone["sym"] for phone in plan["phones"]] == symbols
+        assert plan["main_viseme"] == viseme
+
+    assert svp_service.lyric_to_plan("ー", language="japanese")["method"] == "sustain"
+
+
 # ---------------------------------------------------------------------------
 # upload
 # ---------------------------------------------------------------------------
@@ -232,6 +250,51 @@ def test_timeline_supports_other_fps():
     assert cache_file.is_file()
 
 
+def test_expressive_mode_emits_pose_transitions_and_source_tracks():
+    asset_id = _asset_id()
+    result = svp_service.generate_timeline(
+        asset_id,
+        5,
+        60,
+        mapping_set_id="standard",
+        animation_mode_id="expressive",
+    )
+    timeline = result["timeline"]
+
+    assert timeline["mode"] == {
+        "mappingSetId": "standard",
+        "animationModeId": "expressive",
+        "animationModeVersion": svp_service.MODE_VERSION,
+    }
+    frames = timeline["frames"]
+    assert frames and all("mouthPose" in frame and "phase" in frame for frame in frames)
+    assert {frame["phase"] for frame in frames} >= {"idle", "onset", "sustain"}
+    assert any(frame["mouthPose"] not in svp_service.VISEMES for frame in frames)
+
+    source_tracks = timeline["sourceTracks"]
+    assert len(source_tracks["notes"]) == 220
+    assert source_tracks["phonemes"]
+    assert source_tracks["pitch"]
+    assert all(item["end"] > item["start"] for item in source_tracks["phonemes"])
+
+    tracks = timeline["tracks"]
+    assert 0 < len(tracks["mouth"]) < len(frames)
+    assert len(tracks["blink"]) == len(result["blinks"])
+    assert len(tracks["eyes"]) == len(result["blinks"]) * 2
+    assert set(tracks) >= {"mouth", "blink", "eyes", "brow", "cheek", "sweat", "eyeEffect"}
+
+    cache_file = (config.ASSETS_DIR / "svp" / asset_id
+                  / "timeline-v2-track5-60-standard-expressive.json")
+    assert cache_file.is_file()
+    assert svp_service.generate_timeline(
+        asset_id,
+        5,
+        60,
+        mapping_set_id="standard",
+        animation_mode_id="expressive",
+    )["cached"] is True
+
+
 def test_timeline_rejects_bad_parameters():
     asset_id = _asset_id()
     for track_index in (6, 99, -1):
@@ -246,6 +309,13 @@ def test_timeline_rejects_bad_parameters():
         except ValueError:
             continue
         raise AssertionError(f"非法 fps 应报错: {fps}")
+    try:
+        svp_service.generate_timeline(
+            asset_id, 5, 60, animation_mode_id="unknown")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("未知动画模式应报错")
     try:
         svp_service.generate_timeline("deadbeef0000", 5, 60)
     except FileNotFoundError:

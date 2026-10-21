@@ -45,12 +45,18 @@ class SvpUploadResponse(CamelModel):
 class TimelineRequest(CamelModel):
     track_index: int
     fps: int = Field(default=60, ge=1, le=240)
+    psd_asset_id: str | None = None
+    mapping_set_id: str = "standard"
+    animation_mode_id: Literal["classic", "clear", "natural", "expressive"] = "natural"
 
 
 class TimelineFrame(CamelModel):
     t: float
     viseme: str
     openness: float = 0.0
+    mouth_pose: str | None = None
+    phase: str | None = None
+    note_index: int | None = None
 
 
 class TimelineSource(CamelModel):
@@ -83,6 +89,12 @@ class MouthRun(CamelModel):
     note_index: int | None = None
 
 
+class TimelineMode(CamelModel):
+    mapping_set_id: str = "standard"
+    animation_mode_id: str = "natural"
+    animation_mode_version: int = 1
+
+
 class Timeline(CamelModel):
     fps: int
     duration: float
@@ -90,6 +102,9 @@ class Timeline(CamelModel):
     source: TimelineSource
     notes: list[NoteEvent] = Field(default_factory=list)
     mouth_runs: list[MouthRun] = Field(default_factory=list)
+    mode: TimelineMode = Field(default_factory=TimelineMode)
+    source_tracks: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    tracks: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
 
 class Blink(CamelModel):

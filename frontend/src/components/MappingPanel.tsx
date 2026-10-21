@@ -53,6 +53,13 @@ const CHANNEL_GROUPS: ChannelGroupDef[] = [
       { key: 'o', label: 'o', sub: 'お', required: true },
       { key: 'n', label: 'n', sub: 'ん', required: true },
       { key: 'closed', label: 'closed', sub: '闭口', required: true },
+      { key: 'pressed', label: 'pressed', sub: '紧闭' },
+      { key: 'narrow', label: 'narrow', sub: '窄口' },
+      { key: 'roundSmall', label: 'roundSmall', sub: '小圆口' },
+      { key: 'aSoft', label: 'aSoft', sub: '轻开口' },
+      { key: 'openLarge', label: 'openLarge', sub: '大开口' },
+      { key: 'openXLarge', label: 'openXLarge', sub: '特大开口' },
+      { key: 'wide', label: 'wide', sub: '宽口' },
     ],
   },
   {
@@ -88,13 +95,34 @@ const CHANNEL_GROUPS: ChannelGroupDef[] = [
       { key: 'deep', label: 'deep', sub: '深红' },
     ],
   },
+  {
+    channel: 'sweat',
+    title: '汗 sweat',
+    requiredHint: '可选叠加通道，默认关闭',
+    slots: [
+      { key: 'single', label: 'single', sub: '单汗' },
+      { key: 'double', label: 'double', sub: '双汗' },
+      { key: 'neck', label: 'neck', sub: '颈汗' },
+    ],
+  },
+  {
+    channel: 'eyeEffect',
+    title: '眼部效果 eyeEffect',
+    requiredHint: '可选叠加通道，默认关闭',
+    slots: [
+      { key: 'tear', label: 'tear', sub: '眼泪' },
+      { key: 'cry', label: 'cry', sub: '哭泣' },
+    ],
+  },
 ]
 
 const DEFAULT_CHOICES: Record<ChannelName, string[]> = {
-  mouth: ['closed', 'n', 'f', 'a', 'i', 'u', 'e', 'o'],
+  mouth: ['closed', 'pressed', 'narrow', 'roundSmall', 'aSoft', 'a', 'i', 'u', 'e', 'o', 'n', 'f', 'openLarge', 'openXLarge', 'wide'],
   eyes: ['open', 'blink', 'smile', 'cry'],
   brow: ['neutral', 'angry', 'question', 'surprise', 'sad'],
   cheek: ['normal', 'blush', 'deep'],
+  sweat: ['off', 'single', 'double', 'neck'],
+  eyeEffect: ['off', 'tear', 'cry'],
 }
 
 const DEFAULT_LABELS: Record<ChannelName, string> = {
@@ -102,6 +130,8 @@ const DEFAULT_LABELS: Record<ChannelName, string> = {
   eyes: '默认眼睛',
   brow: '默认眉毛',
   cheek: '默认脸颊',
+  sweat: '默认汗效果',
+  eyeEffect: '默认眼部效果',
 }
 
 function flattenPixels(node: LayerNode | null): LayerNode[] {

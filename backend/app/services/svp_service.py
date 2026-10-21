@@ -43,6 +43,9 @@ VISEME_OPENNESS = {
     "e": 0.62, "i": 0.52, "a": 0.95,
 }
 
+ANIMATION_MODES = {"classic", "clear", "natural", "expressive"}
+MODE_VERSION = 2
+
 # timeline shaping (same defaults as the verified prototype)
 TAIL_SEC = 0.5
 CONSONANT_FRAMES = 2
@@ -181,12 +184,39 @@ _EN_DIGRAPHS = {
     "ei": "e", "ue": "u", "ui": "u",
 }
 
-SUSTAIN_TOKENS = {"-", "—", "–", "～", "~"}
+SUSTAIN_TOKENS = {"-", "—", "–", "～", "~", "ー"}
 BREATH_TOKENS = {"br", "breath", "sil", "pau"}
 PUNCT_CHARS = set("，。！？、,.!?;；:：…·—~～\"'“”‘’()（）[]【】 \t")
 _APOSTROPHE_RE = re.compile(r"^['’‘`´]")
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002a6df]")
+_KANA_RE = re.compile(r"[\u3041-\u309f\u30a1-\u30ff]")
 _SILENT_CHARS = set("，。！？、,.!?;；:：…·—~～\"'“”‘’()（）[]【】")
+
+_KANA_ROMAJI = {
+    "きゃ": "kya", "きゅ": "kyu", "きょ": "kyo", "ぎゃ": "gya", "ぎゅ": "gyu", "ぎょ": "gyo",
+    "しゃ": "sha", "しゅ": "shu", "しょ": "sho", "じゃ": "ja", "じゅ": "ju", "じょ": "jo",
+    "ちゃ": "cha", "ちゅ": "chu", "ちょ": "cho", "にゃ": "nya", "にゅ": "nyu", "にょ": "nyo",
+    "ひゃ": "hya", "ひゅ": "hyu", "ひょ": "hyo", "びゃ": "bya", "びゅ": "byu", "びょ": "byo",
+    "ぴゃ": "pya", "ぴゅ": "pyu", "ぴょ": "pyo", "みゃ": "mya", "みゅ": "myu", "みょ": "myo",
+    "りゃ": "rya", "りゅ": "ryu", "りょ": "ryo", "ふぁ": "fa", "ふぃ": "fi", "ふぇ": "fe", "ふぉ": "fo",
+    "てぃ": "ti", "でぃ": "di", "とぅ": "tu", "どぅ": "du", "うぃ": "wi", "うぇ": "we", "うぉ": "wo",
+    "ゔぁ": "va", "ゔぃ": "vi", "ゔ": "vu", "ゔぇ": "ve", "ゔぉ": "vo",
+    "あ": "a", "い": "i", "う": "u", "え": "e", "お": "o",
+    "か": "ka", "き": "ki", "く": "ku", "け": "ke", "こ": "ko",
+    "が": "ga", "ぎ": "gi", "ぐ": "gu", "げ": "ge", "ご": "go",
+    "さ": "sa", "し": "shi", "す": "su", "せ": "se", "そ": "so",
+    "ざ": "za", "じ": "ji", "ず": "zu", "ぜ": "ze", "ぞ": "zo",
+    "た": "ta", "ち": "chi", "つ": "tsu", "て": "te", "と": "to",
+    "だ": "da", "ぢ": "ji", "づ": "zu", "で": "de", "ど": "do",
+    "な": "na", "に": "ni", "ぬ": "nu", "ね": "ne", "の": "no",
+    "は": "ha", "ひ": "hi", "ふ": "fu", "へ": "he", "ほ": "ho",
+    "ば": "ba", "び": "bi", "ぶ": "bu", "べ": "be", "ぼ": "bo",
+    "ぱ": "pa", "ぴ": "pi", "ぷ": "pu", "ぺ": "pe", "ぽ": "po",
+    "ま": "ma", "み": "mi", "む": "mu", "め": "me", "も": "mo",
+    "や": "ya", "ゆ": "yu", "よ": "yo", "ら": "ra", "り": "ri", "る": "ru", "れ": "re", "ろ": "ro",
+    "わ": "wa", "ゐ": "wi", "ゑ": "we", "を": "o", "ん": "n", "っ": "cl",
+    "ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o",
+}
 
 # Small baked table for the characters used by the bundled projects.  When
 # pypinyin is available it is preferred (see _load_pypinyin); the table keeps
@@ -454,6 +484,55 @@ def _merge_syllable_plans(plans: list[dict], raw: str) -> dict:
     }
 
 
+def _plan_kana(text: str) -> dict:
+    hiragana = "".join(chr(ord(char) - 0x60) if "ァ" <= char <= "ヶ" else char for char in text)
+    plans: list[dict] = []
+    index = 0
+    while index < len(hiragana):
+        token = hiragana[index:index + 2]
+        romaji = _KANA_ROMAJI.get(token)
+        if romaji:
+            index += 2
+        else:
+            token = hiragana[index]
+            romaji = _KANA_ROMAJI.get(token)
+            index += 1
+        if not romaji:
+            if token in _SILENT_CHARS or token.isspace():
+                continue
+            plans.append(_unmapped_plan(token, "unsupported kana %r" % token))
+            continue
+        if romaji == "cl":
+            plans.append({
+                "method": "kana", "raw": token, "normalized": romaji,
+                "initial": "cl", "final": "", "phones": [{"sym": "cl", "kind": "closure", "viseme": "closed"}],
+                "onset_viseme": "closed", "main_viseme": "closed", "coda_viseme": None, "confidence": "rule",
+            })
+            continue
+        if romaji == "n":
+            initial, final, main = "", "n", "n"
+            phones = [{"sym": "n", "kind": "coda", "viseme": "n"}]
+        else:
+            vowel_index = next((i for i, char in enumerate(romaji) if char in "aiueo"), -1)
+            initial, final = romaji[:vowel_index], romaji[vowel_index:]
+            main = romaji[vowel_index]
+            phones = []
+            if initial:
+                phones.append({"sym": initial, "kind": "initial", "viseme": PINYIN_INITIAL_VISEME.get(initial)})
+            phones.append({"sym": final, "kind": "final", "viseme": main})
+        plans.append({
+            "method": "kana", "raw": token, "normalized": romaji,
+            "initial": initial, "final": final, "phones": phones,
+            "onset_viseme": PINYIN_INITIAL_VISEME.get(initial), "main_viseme": main,
+            "coda_viseme": "n" if romaji == "n" else None, "confidence": "rule",
+        })
+    if not plans:
+        return _unmapped_plan(text, "kana lyric without syllables")
+    merged = _merge_syllable_plans(plans, text)
+    merged["method"] = "kana" if len(plans) == 1 else "kana_words"
+    return merged
+
+
 def lyric_to_plan(lyric: str, language: str = "mandarin", phoneset: str = "xsampa") -> dict:
     """Map one SVP lyric token to a viseme plan (same rules as lyric2viseme.py)."""
     raw = lyric if lyric is not None else ""
@@ -481,6 +560,9 @@ def lyric_to_plan(lyric: str, language: str = "mandarin", phoneset: str = "xsamp
 
     if (language or "").lower().startswith("english") or (phoneset or "").lower() == "arpabet":
         return _plan_english_word(stripped)
+
+    if _KANA_RE.search(stripped):
+        return _plan_kana(stripped)
 
     if _CJK_RE.search(stripped):
         plans: list[dict] = []
@@ -898,6 +980,125 @@ def _viseme_runs(viseme: list[str], note_index: list[int], fps: int) -> list[dic
     return runs
 
 
+def _pitch_bounds(events: list[dict]) -> tuple[float, float]:
+    pitches = sorted(float(event["note"].pitch_midi) for event in events)
+    if not pitches:
+        return 60.0, 72.0
+    low = pitches[min(len(pitches) - 1, int(len(pitches) * 0.2))]
+    high = pitches[min(len(pitches) - 1, int(len(pitches) * 0.85))]
+    return low, max(low + 1.0, high)
+
+
+def _onset_pose(event: dict) -> str | None:
+    phones = event["plan"].get("phones") or []
+    symbols = {str(phone.get("sym") or "") for phone in phones[:-1] or phones}
+    if symbols & {"m", "b", "p", "ph", "cl"}:
+        return "pressed"
+    if symbols & {"w"}:
+        return "roundSmall"
+    if symbols & {"n", "f", "v", "s", "z", "sh", "s`", "s\\"}:
+        return "narrow"
+    onset = event["plan"].get("onset_viseme")
+    return {"closed": "pressed", "n": "narrow", "f": "narrow"}.get(onset)
+
+
+def _pose_frames(events: list[dict], viseme: list[str], note_index: list[int], fps: int,
+                 mode: str) -> tuple[list[str], list[str]]:
+    poses = list(viseme)
+    phases = ["idle" if value == "closed" else "sustain" for value in viseme]
+    if mode == "classic":
+        return poses, phases
+
+    low_pitch, high_pitch = _pitch_bounds(events)
+    strength = {"clear": 0.25, "natural": 0.6, "expressive": 1.0}[mode]
+    for event in events:
+        if event["sustained"]:
+            continue
+        note = event["note"]
+        start = max(0, min(len(poses), int(round(note.start_sec * fps))))
+        end = max(start, min(len(poses), int(round(note.end_sec * fps))))
+        span = end - start
+        if span < 2:
+            continue
+        main = event["main"]
+        onset = _onset_pose(event)
+        attack = "roundSmall" if main in {"u", "o"} else ("aSoft" if main == "a" else main)
+        pitch_level = max(0.0, min(1.0, (float(note.pitch_midi) - low_pitch) / (high_pitch - low_pitch)))
+        peak = main
+        if main == "a" and span >= 8 and pitch_level >= 0.75:
+            peak = "openXLarge" if mode == "expressive" and pitch_level >= 0.92 and span >= 12 else "openLarge"
+        elif main == "a" and mode == "expressive" and span >= 8:
+            peak = "wide"
+
+        onset_len = min(2 if strength < 1 else 3, max(0, span // 4)) if onset else 0
+        attack_len = min(2, max(0, (span - onset_len) // 4))
+        release_len = min(2, max(0, (span - onset_len - attack_len) // 4))
+        if span <= 5:
+            onset_len = 1 if onset else 0
+            attack_len = 0
+            release_len = 0
+        elif span <= 9:
+            release_len = 1
+
+        cursor = start
+        for frame in range(cursor, min(end, cursor + onset_len)):
+            poses[frame], phases[frame] = onset or main, "onset"
+        cursor += onset_len
+        for frame in range(cursor, min(end, cursor + attack_len)):
+            poses[frame], phases[frame] = attack, "attack"
+        cursor += attack_len
+        sustain_end = max(cursor, end - release_len)
+        for frame in range(cursor, sustain_end):
+            poses[frame], phases[frame] = peak, "sustain"
+        release = attack if attack != main else main
+        for frame in range(sustain_end, end):
+            poses[frame], phases[frame] = release, "release"
+    return poses, phases
+
+
+def _sparse_mouth_track(frames: list[dict]) -> list[dict]:
+    track: list[dict] = []
+    previous: tuple | None = None
+    for frame in frames:
+        current = (frame["mouthPose"], frame["viseme"], frame["phase"], frame.get("noteIndex"))
+        if current == previous:
+            continue
+        track.append({
+            "t": frame["t"], "state": frame["mouthPose"], "viseme": frame["viseme"],
+            "phase": frame["phase"], "openness": frame["openness"],
+            "noteIndex": frame.get("noteIndex"),
+        })
+        previous = current
+    return track
+
+
+def _source_tracks(events: list[dict]) -> dict[str, list[dict]]:
+    notes: list[dict] = []
+    phonemes: list[dict] = []
+    pitch: list[dict] = []
+    for event in events:
+        note = event["note"]
+        start, end = note.start_sec, note.end_sec
+        notes.append({"index": event["index"], "start": round(start, 6), "end": round(end, 6),
+                      "lyric": note.lyric, "pitchMidi": round(note.pitch_midi, 3)})
+        pitch.append({"start": round(start, 6), "end": round(end, 6),
+                      "midi": round(note.pitch_midi, 3), "source": "note"})
+        phones = event["plan"].get("phones") or []
+        if not phones:
+            continue
+        duration = max(0.0, end - start)
+        onset_duration = min(duration * 0.35, 2 / 60) if len(phones) > 1 else duration
+        for index, phone in enumerate(phones):
+            phone_start = start if index == 0 else start + onset_duration
+            phone_end = start + onset_duration if index == 0 and len(phones) > 1 else end
+            phonemes.append({
+                "start": round(phone_start, 6), "end": round(max(phone_start, phone_end), 6),
+                "symbol": str(phone.get("sym") or ""), "kind": str(phone.get("kind") or "unknown"),
+                "timing": "estimated", "noteIndex": event["index"],
+            })
+    return {"notes": notes, "phonemes": phonemes, "pitch": pitch}
+
+
 def _merge_intervals(intervals: Iterable[tuple[float, float]], gap: float) -> list[list[float]]:
     merged: list[list[float]] = []
     for start, end in sorted(intervals):
@@ -1068,11 +1269,18 @@ def _timeline_stats(events: list[dict], viseme: list[str], note_index: list[int]
     }
 
 
-def _cache_path(asset_id: str, track_index: int, fps: int) -> Path:
-    return storage.asset_dir("svp", asset_id) / f"timeline-track{track_index}-{fps}.json"
+def _cache_path(asset_id: str, track_index: int, fps: int, mapping_set_id: str = "standard",
+                animation_mode_id: str = "classic") -> Path:
+    if animation_mode_id == "classic" and mapping_set_id == "standard":
+        return storage.asset_dir("svp", asset_id) / f"timeline-track{track_index}-{fps}.json"
+    safe_mapping = re.sub(r"[^a-zA-Z0-9_-]", "_", mapping_set_id)
+    return storage.asset_dir("svp", asset_id) / (
+        f"timeline-v2-track{track_index}-{fps}-{safe_mapping}-{animation_mode_id}.json")
 
 
-def generate_timeline(asset_id: str, track_index: int, fps: int = 60) -> dict:
+def generate_timeline(asset_id: str, track_index: int, fps: int = 60, *,
+                      psd_asset_id: str | None = None, mapping_set_id: str = "standard",
+                      animation_mode_id: str = "classic") -> dict:
     """Build (or reuse from disk) the single-track timeline payload."""
     try:
         fps = int(fps)
@@ -1081,14 +1289,23 @@ def generate_timeline(asset_id: str, track_index: int, fps: int = 60) -> dict:
         raise ValueError("trackIndex / fps 必须是整数") from exc
     if not 1 <= fps <= 240:
         raise ValueError("fps 必须在 1..240 之间")
+    if animation_mode_id not in ANIMATION_MODES:
+        raise ValueError(f"未知动画模式: {animation_mode_id}")
     project = get_project(asset_id)
     if not 0 <= track_index < len(project.tracks):
         raise IndexError(
             f"轨道 {track_index} 不存在（共 {len(project.tracks)} 条轨道）")
 
-    cache_file = _cache_path(asset_id, track_index, fps)
+    cache_file = _cache_path(asset_id, track_index, fps, mapping_set_id, animation_mode_id)
     cached = storage.read_json(cache_file)
-    if isinstance(cached, dict) and isinstance(cached.get("timeline"), dict):
+    cached_timeline = cached.get("timeline") if isinstance(cached, dict) else None
+    cached_mode = cached_timeline.get("mode") if isinstance(cached_timeline, dict) else None
+    if (
+        isinstance(cached, dict)
+        and isinstance(cached_timeline, dict)
+        and isinstance(cached_mode, dict)
+        and cached_mode.get("animationModeVersion") == MODE_VERSION
+    ):
         cached["cached"] = True
         return cached
 
@@ -1109,10 +1326,17 @@ def generate_timeline(asset_id: str, track_index: int, fps: int = 60) -> dict:
     duration = round(last_end + TAIL_SEC, 6) if last_end > 0 else 0.0
     n_frames = int(math.ceil(duration * fps)) if duration > 0 else 0
     viseme, note_index = _paint_frames(events, n_frames, fps)
-    frames = [
+    poses, phases = _pose_frames(events, viseme, note_index, fps, animation_mode_id)
+    rich_frames = [
         {"t": round(frame / fps, 6), "viseme": viseme[frame],
-         "openness": VISEME_OPENNESS.get(viseme[frame], 0.0)}
+         "openness": VISEME_OPENNESS.get(viseme[frame], 0.0),
+         "mouthPose": poses[frame], "phase": phases[frame],
+         "noteIndex": note_index[frame] if note_index[frame] >= 0 else None}
         for frame in range(n_frames)
+    ]
+    frames = rich_frames if animation_mode_id != "classic" else [
+        {"t": frame["t"], "viseme": frame["viseme"], "openness": frame["openness"]}
+        for frame in rich_frames
     ]
     notes = [{
         "index": event["index"],
@@ -1143,6 +1367,13 @@ def generate_timeline(asset_id: str, track_index: int, fps: int = 60) -> dict:
             % (stats["lyricCoveragePercent"], stats["unmappedLyricNotes"],
                "、".join(repr(item) for item in examples)))
 
+    blinks = _build_blinks(events, duration, fps)
+    eyes_track: list[dict] = []
+    for blink in blinks:
+        eyes_track.extend([
+            {"t": blink["t"], "state": "blink"},
+            {"t": round(blink["t"] + blink["duration"], 6), "state": "open"},
+        ])
     payload = {
         "timeline": {
             "fps": fps,
@@ -1151,8 +1382,17 @@ def generate_timeline(asset_id: str, track_index: int, fps: int = 60) -> dict:
             "source": {"kind": "svp", "assetId": asset_id, "trackIndex": track_index},
             "notes": notes,
             "mouthRuns": _viseme_runs(viseme, note_index, fps),
+            "mode": {"mappingSetId": mapping_set_id, "animationModeId": animation_mode_id,
+                     "animationModeVersion": MODE_VERSION},
+            "sourceTracks": _source_tracks(events),
+            "tracks": {
+                "mouth": _sparse_mouth_track(rich_frames),
+                "blink": blinks,
+                "eyes": eyes_track,
+                "brow": [], "cheek": [], "sweat": [], "eyeEffect": [],
+            },
         },
-        "blinks": _build_blinks(events, duration, fps),
+        "blinks": blinks,
         "stats": stats,
         "warnings": warnings,
         "cached": False,

@@ -2,6 +2,7 @@
 // same request/response shapes as CONTRACT.md §5 so the real fetch code path is
 // byte-for-byte the same — only `api.ts` swaps the transport.
 import type {
+  AnimationModeId,
   AudioSummary,
   AutomapResult,
   BakeManifest,
@@ -161,6 +162,8 @@ function buildProfile(): MappingProfile {
       eyes: { open: '119', blink: '120', smile: null, cry: null },
       brow: { neutral: '130', angry: '131', question: '132', surprise: '133', sad: null },
       cheek: { normal: '140', blush: '141', deep: '142' },
+      sweat: {},
+      eyeEffect: {},
     },
     zorder: ['cheek', 'mouth', 'eyes', 'brow'],
     meta: {
@@ -250,7 +253,11 @@ function mulberry32(seed: number): () => number {
 
 const MOCK_DURATION = 28
 
-function buildTimeline(trackIndex: number, fps: number): { timeline: Timeline; blinks: Blink[]; stats: Record<string, unknown> } {
+function buildTimeline(
+  trackIndex: number,
+  fps: number,
+  options: { mappingSetId?: string; animationModeId?: AnimationModeId } = {},
+): { timeline: Timeline; blinks: Blink[]; stats: Record<string, unknown> } {
   const random = mulberry32(0x9e3779b9 + trackIndex * 7919)
   const frames: TimelineFrame[] = [{ t: 0, viseme: 'closed', openness: 0 }]
 
@@ -283,7 +290,22 @@ function buildTimeline(trackIndex: number, fps: number): { timeline: Timeline; b
     }
     const openness =
       viseme === 'closed' ? 0 : Math.round((0.35 + random() * 0.62) * 100) / 100
-    frames.push({ t: Math.round(time * 1000) / 1000, viseme, openness })
+    const mouthPose = options.animationModeId === 'classic'
+      ? undefined
+      : viseme === 'a' && openness > 0.8
+        ? 'openLarge'
+        : viseme === 'n' || viseme === 'f'
+          ? 'narrow'
+          : viseme === 'u' || viseme === 'o'
+            ? 'roundSmall'
+            : viseme
+    frames.push({
+      t: Math.round(time * 1000) / 1000,
+      viseme,
+      openness,
+      mouthPose,
+      phase: viseme === 'closed' ? 'idle' : 'sustain',
+    })
     previous = viseme
     time += 0.07 + random() * 0.22
   }
@@ -300,6 +322,52 @@ function buildTimeline(trackIndex: number, fps: number): { timeline: Timeline; b
     duration: MOCK_DURATION,
     frames,
     source: { kind: 'svp', assetId: ID_SVP, trackIndex },
+    mode: {
+      mappingSetId: options.mappingSetId ?? 'standard',
+      animationModeId: options.animationModeId ?? 'natural',
+      animationModeVersion: 1,
+    },
+    sourceTracks: {
+      notes: frames.slice(1, 25).map((frame, index) => ({
+        index,
+        start: frame.t,
+        end: Math.min(MOCK_DURATION, frame.t + 0.28),
+        lyric: ['流', '沙', '落', '在'][index % 4],
+        pitchMidi: 58 + (index % 12),
+      })),
+      phonemes: frames.slice(1, 49).map((frame, index) => ({
+        start: frame.t,
+        end: Math.min(MOCK_DURATION, frame.t + 0.12),
+        symbol: frame.viseme,
+        kind: frame.viseme === 'closed' ? 'pause' : 'vowel',
+        timing: 'estimated' as const,
+        noteIndex: Math.floor(index / 2),
+      })),
+      pitch: frames.slice(1, 25).map((frame, index) => ({
+        start: frame.t,
+        end: Math.min(MOCK_DURATION, frame.t + 0.28),
+        midi: 58 + (index % 12),
+        source: 'note',
+      })),
+    },
+    tracks: {
+      mouth: frames.map((frame) => ({
+        t: frame.t,
+        state: frame.mouthPose ?? frame.viseme,
+        viseme: frame.viseme,
+        phase: frame.phase,
+        openness: frame.openness,
+      })),
+      blink: blinks,
+      eyes: blinks.flatMap((blink) => [
+        { t: blink.t, state: 'blink' },
+        { t: blink.t + blink.duration, state: 'open' },
+      ]),
+      brow: [],
+      cheek: [],
+      sweat: [],
+      eyeEffect: [],
+    },
   }
 
   const visemeSet = new Set(frames.map((frame) => frame.viseme))
@@ -498,7 +566,12 @@ export async function uploadSvp(file: File): Promise<SvpUploadInfo> {
   return clone(state.svp)
 }
 
-export async function generateTimeline(assetId: string, trackIndex: number, fps: number): Promise<TimelineResult> {
+export async function generateTimeline(
+  assetId: string,
+  trackIndex: number,
+  fps: number,
+  options?: { mappingSetId?: string; animationModeId?: AnimationModeId },
+): Promise<TimelineResult> {
   await delay(1150)
   if (!state.svp || state.svp.assetId !== assetId) {
     const error = new Error('SVP 素材不存在（mock）')
@@ -516,7 +589,7 @@ export async function generateTimeline(assetId: string, trackIndex: number, fps:
     ;(error as Error & { status?: number }).status = 400
     throw error
   }
-  const built = buildTimeline(trackIndex, fps)
+  const built = buildTimeline(trackIndex, fps, options)
   state.timeline = { timeline: built.timeline, blinks: built.blinks, stats: built.stats, warnings: ['mock 时间轴仅生成前 28 秒用于预览'] }
   return clone(state.timeline)
 }

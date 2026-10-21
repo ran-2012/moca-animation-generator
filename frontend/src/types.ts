@@ -18,17 +18,23 @@ export interface LayerNode {
 
 export type Viseme = 'closed' | 'n' | 'f' | 'a' | 'i' | 'u' | 'e' | 'o'
 
-export type MouthSlot = 'a' | 'i' | 'u' | 'e' | 'o' | 'n' | 'closed'
+export type MouthSlot =
+  | 'a' | 'i' | 'u' | 'e' | 'o' | 'n' | 'closed'
+  | 'narrow' | 'pressed' | 'roundSmall' | 'aSoft' | 'wide' | 'openLarge' | 'openXLarge' | 'scream'
 export type EyesSlot = 'open' | 'blink' | 'smile' | 'cry'
 export type BrowSlot = 'neutral' | 'angry' | 'question' | 'surprise' | 'sad'
 export type CheekSlot = 'normal' | 'blush' | 'deep'
-export type ChannelName = 'mouth' | 'eyes' | 'brow' | 'cheek'
+export type ChannelName = 'mouth' | 'eyes' | 'brow' | 'cheek' | 'sweat' | 'eyeEffect'
+export type AnimationModeId = 'classic' | 'clear' | 'natural' | 'expressive'
 
 export interface Channels {
   mouth: Partial<Record<MouthSlot, string | null>>
   eyes: Partial<Record<EyesSlot, string | null>>
   brow: Partial<Record<BrowSlot, string | null>>
   cheek: Partial<Record<CheekSlot, string | null>>
+  sweat: Record<string, string | null>
+  eyeEffect: Record<string, string | null>
+  [channel: string]: Record<string, string | null>
 }
 
 export interface DefaultState {
@@ -36,6 +42,13 @@ export interface DefaultState {
   eyes: string
   brow: string
   cheek: string
+  sweat?: string
+  eyeEffect?: string
+}
+
+export interface MappingSet {
+  label: string
+  channels: Channels
 }
 
 export interface MappingProfile {
@@ -47,6 +60,9 @@ export interface MappingProfile {
     defaultState: DefaultState
   }
   channels: Channels
+  mappingSets?: Record<string, MappingSet>
+  defaultMappingSetId?: string
+  channelDefinitions?: Record<string, { behavior: 'exclusive' | 'overlay'; defaultState: string }>
   zorder: string[]
   meta: {
     auto?: boolean
@@ -77,6 +93,43 @@ export interface TimelineFrame {
   t: number
   viseme: Viseme
   openness?: number
+  mouthPose?: string
+  phase?: string
+  noteIndex?: number | null
+}
+
+export interface TimelineEvent {
+  t: number
+  state?: string
+  viseme?: Viseme
+  phase?: string
+  openness?: number
+  duration?: number
+  noteIndex?: number | null
+}
+
+export interface SourceNote {
+  index: number
+  start: number
+  end: number
+  lyric: string
+  pitchMidi: number
+}
+
+export interface SourcePhoneme {
+  start: number
+  end: number
+  symbol: string
+  kind: string
+  timing: 'estimated' | 'source'
+  noteIndex: number
+}
+
+export interface SourcePitch {
+  start: number
+  end: number
+  midi: number
+  source: string
 }
 
 export interface Timeline {
@@ -88,6 +141,17 @@ export interface Timeline {
     assetId: string
     trackIndex: number
   }
+  mode?: {
+    mappingSetId: string
+    animationModeId: AnimationModeId
+    animationModeVersion: number
+  }
+  sourceTracks?: {
+    notes: SourceNote[]
+    phonemes: SourcePhoneme[]
+    pitch: SourcePitch[]
+  }
+  tracks?: Record<string, TimelineEvent[]>
 }
 
 export interface Blink {
@@ -165,10 +229,24 @@ export interface PeaksResult {
 /** Derived per-frame state consumed by the stage renderer. */
 export interface StageState {
   viseme: Viseme
+  mouthPose?: string
   blink: boolean
   brow: string
   cheek: string
   openness: number
+  channels: Record<string, string>
+}
+
+export interface SwayConfig {
+  enabled: boolean
+  amplitude: number
+  frequency: number
+  offset: number
+}
+
+export interface RenderSwayConfig extends SwayConfig {
+  bpm: number | null
+  audioStart: number
 }
 
 export interface ToastMessage {
@@ -189,6 +267,7 @@ export interface RenderTimelinePayload {
   fps: number
   duration: number
   frames: TimelineFrame[]
+  tracks?: Record<string, TimelineEvent[]>
 }
 
 export interface RenderRequestPayload {
@@ -201,8 +280,9 @@ export interface RenderRequestPayload {
   width: number
   format: RenderFormat
   background: string
-  brow: string
-  cheek: string
+  brow: string | null
+  cheek: string | null
+  sway?: RenderSwayConfig
 }
 
 export interface RenderJobInfo {
@@ -235,10 +315,14 @@ export interface SessionState {
   selectedLayerId: string | null
   svp: SvpUploadInfo | null
   selectedTrack: number | null
+  mappingSetId?: string
+  animationModeId?: AnimationModeId
   fps: number
+  timelineView?: { start: number; span: number }
   audio: AudioSummary | null
   bpm: number | null
   offset: number
+  sway?: SwayConfig
   updatedAt?: string | null
 }
 

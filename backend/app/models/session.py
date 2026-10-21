@@ -8,9 +8,16 @@ from the persisted assets/caches using the stored ids.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class SessionSway(BaseModel):
+    enabled: bool = False
+    amplitude: float = Field(default=0.35, ge=0, le=1)
+    frequency: float = Field(default=0.5, ge=0.125, le=4)
+    offset: float = Field(default=0.0, ge=-64, le=64)
 
 
 class SessionState(BaseModel):
@@ -29,11 +36,15 @@ class SessionState(BaseModel):
 
     svp: dict[str, Any] | None = None
     selectedTrack: int | None = None
+    mappingSetId: str = "standard"
+    animationModeId: Literal["classic", "clear", "natural", "expressive"] = "natural"
     fps: float = 60.0
+    timelineView: dict[str, float] | None = None
 
     audio: dict[str, Any] | None = None
     bpm: float | None = None
     offset: float = 0.0
+    sway: SessionSway | None = None
 
     updatedAt: str | None = None
 

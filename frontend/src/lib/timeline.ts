@@ -1,4 +1,4 @@
-import type { Blink, TimelineFrame, Viseme } from '../types'
+import type { Blink, TimelineEvent, TimelineFrame, Viseme } from '../types'
 import { clamp } from './format'
 
 export const VISEMES: Viseme[] = ['closed', 'n', 'f', 'a', 'i', 'u', 'e', 'o']
@@ -48,6 +48,20 @@ export function visemeAt(frames: TimelineFrame[], time: number, fallback: Viseme
   return index >= 0 ? frames[index].viseme : fallback
 }
 
+export function mouthPoseAt(frames: TimelineFrame[], time: number): string | undefined {
+  const index = findFrameIndex(frames, time)
+  return index >= 0 ? frames[index].mouthPose : undefined
+}
+
+export function eventStateAt(events: TimelineEvent[], time: number): string | undefined {
+  let state: string | undefined
+  for (const event of events) {
+    if (event.t > time + 1e-6) break
+    state = event.state
+  }
+  return state
+}
+
 export function opennessAt(frames: TimelineFrame[], time: number): number {
   const index = findFrameIndex(frames, time)
   if (index < 0) return 0
@@ -56,7 +70,7 @@ export function opennessAt(frames: TimelineFrame[], time: number): number {
 
 export function isBlinkActive(blinks: Blink[], time: number): boolean {
   for (const blink of blinks) {
-    if (time >= blink.t - 0.02 && time < blink.t + Math.max(blink.duration, 0.04) + 0.02) {
+    if (time >= blink.t && time < blink.t + blink.duration) {
       return true
     }
   }

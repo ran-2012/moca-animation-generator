@@ -192,6 +192,7 @@ cd frontend; npm install; cd ..
 ## 开发
 
 - 契约：`CONTRACT.md`
+- 代理开发指引：`AGENTS.md`（环境坑、不变量、验证命令）
 - 后端：`backend/app/main.py`（Lead 维护），各领域 router/service 由对应模块负责；
 - 前端：`frontend/src/`
 - 测试（pytest 已 vendored，直接跑）：

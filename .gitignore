@@ -70,3 +70,5 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+.codegraph

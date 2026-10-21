@@ -15,24 +15,33 @@ if (-not (Test-Path (Join-Path $root "frontend\node_modules"))) {
     Pop-Location
 }
 
-# Start backend in a new window.
 $backend = Join-Path $root "backend"
-Start-Process -FilePath "powershell" -ArgumentList @(
-    "-NoExit", "-Command",
-    "Set-Location '$backend'; python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 --reload"
-) -WorkingDirectory $backend
-
-# Start frontend in a new window.
 $frontend = Join-Path $root "frontend"
-Start-Process -FilePath "powershell" -ArgumentList @(
-    "-NoExit", "-Command",
-    "`$env:npm_config_cache='$($env:npm_config_cache)'; Set-Location '$frontend'; npm run dev -- --host 127.0.0.1"
-) -WorkingDirectory $frontend
+$backendProcess = $null
+$frontendProcess = $null
 
-Start-Sleep -Seconds 3
-Write-Host ""
-Write-Host "MocaDiff dev servers starting:"
-Write-Host "  Frontend : http://127.0.0.1:5173"
-Write-Host "  Backend  : http://127.0.0.1:8787/api/health"
-Write-Host ""
-Write-Host "Close the two spawned windows to stop."
+try {
+    $backendProcess = Start-Process -FilePath "python" -ArgumentList @(
+        "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8787", "--reload"
+    ) -WorkingDirectory $backend -NoNewWindow -PassThru
+
+    $frontendProcess = Start-Process -FilePath "npm.cmd" -ArgumentList @(
+        "run", "dev", "--", "--host", "127.0.0.1"
+    ) -WorkingDirectory $frontend -NoNewWindow -PassThru
+
+    Write-Host ""
+    Write-Host "MocaDiff dev servers starting in this console:"
+    Write-Host "  Frontend : http://127.0.0.1:5173"
+    Write-Host "  Backend  : http://127.0.0.1:8787/api/health"
+    Write-Host "  Press Ctrl+C to stop both servers."
+    Write-Host ""
+
+    Wait-Process -Id $backendProcess.Id, $frontendProcess.Id
+}
+finally {
+    foreach ($process in @($backendProcess, $frontendProcess)) {
+        if ($null -ne $process -and -not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

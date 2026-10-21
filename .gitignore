@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+.test_data_*/
+.venv/
+venv/
+*.egg-info/
+
+# Vendored dependencies for the local sandbox only.  A normal checkout should
+# use `pip install -r backend/requirements.txt` instead.  Never commit wheels,
+# .pyd/.dll binaries or site-packages trees.
+backend/vendor/
+
+# ---------------------------------------------------------------------------
+# Node / frontend build
+# ---------------------------------------------------------------------------
+node_modules/
+frontend/dist/
+frontend/.vite/
+.npm-cache/
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Runtime data (uploaded assets, cached textures, renders, projects, API keys)
+# ---------------------------------------------------------------------------
+data/
+projects/
+# Rendered frames of the copyrighted character assets must stay local.
+docs/preview_*
+
+# ---------------------------------------------------------------------------
+# Local session / recovery files (backend runtime state)
+# ---------------------------------------------------------------------------
+session.json
+session.json.*
+session.prev.json
+session.recovered.json
+
+# ---------------------------------------------------------------------------
+# Sandbox scratch dirs / local test output
+# ---------------------------------------------------------------------------
+_work/
+*.log
+.tmp-*
+tmp/
+scratch/
+# ACL-locked empty dirs created by a previous Windows sandbox test run
+backend/tests/plainmode*/
+backend/tests/probe*/
+backend/tests/mode700test*/
+backend/tests/mode_700/
+
+# ---------------------------------------------------------------------------
+# Secrets / local config
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp

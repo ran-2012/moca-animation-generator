@@ -1,0 +1,30 @@
+# Normalize text files, keep binary assets untouched.
+* text=auto
+
+*.py text
+*.ts text
+*.tsx text
+*.js text
+*.jsx text
+*.json text
+*.md text
+*.css text
+*.html text
+*.yml text
+*.yaml text
+*.toml text
+*.ini text
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.psd binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary
+*.mov binary
+*.webm binary
+*.zip binary

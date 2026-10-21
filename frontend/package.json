@@ -1,0 +1,25 @@
+{
+  "name": "mocadiff-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --require ./scripts/child-process-shim.cjs ./node_modules/vite/bin/vite.js",
+    "build": "tsc -b && node --require ./scripts/child-process-shim.cjs ./node_modules/vite/bin/vite.js build",
+    "preview": "node --require ./scripts/child-process-shim.cjs ./node_modules/vite/bin/vite.js preview",
+    "smoke": "node --require ./scripts/child-process-shim.cjs ./scripts/dom-smoke.mjs"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^29.1.1",
+    "typescript": "~5.8.3",
+    "vite": "^8.3.4"
+  }
+}

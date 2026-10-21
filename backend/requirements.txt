@@ -1,0 +1,21 @@
+# Runtime dependencies for the MocaDiff backend.
+# Install with:  python -m pip install -r requirements.txt
+#
+# In the original Windows sandbox, pip could not reach PyPI.  A local fallback
+# copy of psd-tools/attrs/pytest exists in backend/vendor/ (git-ignored).
+# `backend/app/config.py` puts that directory on sys.path automatically, so a
+# checkout that has no vendor/ still works after installing these packages.
+fastapi==0.129.2
+uvicorn[standard]==0.41.0
+pydantic==2.12.4
+python-multipart>=0.0.9
+numpy>=2.0
+Pillow>=11.0
+librosa>=0.11.0
+psd-tools==1.25.0
+attrs>=23.2
+
+# Optional / intentionally avoided in this environment:
+# - httpx / openai: the installed httpx 0.13.3 cannot import on Python 3.13
+#   (removed `cgi` module); the AI module therefore uses stdlib urllib.
+# - pytest is only needed for tests; see requirements-dev.txt.

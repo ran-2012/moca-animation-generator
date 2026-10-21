@@ -216,5 +216,6 @@ cd backend
 
 ## License
 
-工具代码：待定（建议 MIT）。
-素材：遵循原作者 `readme.txt`，仅限个人非商用使用，禁止二次配布。
+工具代码采用 [MIT License](LICENSE)。
+
+素材不包含在 MIT 授权范围内；请遵循原作者 `readme.txt`，仅限个人非商用使用，禁止二次配布。

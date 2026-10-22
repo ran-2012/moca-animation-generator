@@ -178,7 +178,7 @@ moca-diff/
 ## 7. 前端注意事项
 
 - `App.tsx` 很大，改状态逻辑前先定位：数据源、Session、播放、布局、素材 handlers。
-- 布局用 CSS grid + 可拖动 split handle；timeline 在底部，左右面板可调宽高。相关 localStorage key：`mocadiff.layout.v1`。
+- 布局用 CSS grid + 可拖动 split handle；timeline 在底部，左右面板可调宽高。相关 localStorage key：`mocadiff.layout.v2`。
 - 舞台是 canvas 2D，合成 base + patch；不要引入 WebGL/组件库。
 - 时间轴绘制在 `components/Timeline.tsx`；缩放/拖音频/播放头都依赖同一个 view 映射，改动时一起验证。
 - 音频面板：音频起点输入、`-0.1/+0.1`、对齐播放头、归零、原始音频来源标签。

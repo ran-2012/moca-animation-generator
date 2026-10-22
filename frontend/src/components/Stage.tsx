@@ -4,7 +4,16 @@ import type { BakeManifest, DefaultState, StageState } from '../types'
 import { VISEME_COLORS, VISEME_LABELS } from '../lib/timeline'
 import { formatTimecode } from '../lib/format'
 import { swaySafetyScale, swayTransform } from '../lib/sway'
-import { IconFit, IconImage, IconSpinner, IconZoomIn, IconZoomOut } from './Icons'
+import {
+  IconChevronRight,
+  IconFit,
+  IconImage,
+  IconPause,
+  IconPlay,
+  IconSpinner,
+  IconZoomIn,
+  IconZoomOut,
+} from './Icons'
 
 interface StageProps {
   manifest: BakeManifest | null
@@ -16,6 +25,10 @@ interface StageProps {
   bpm: number | null
   sway: import('../types').SwayConfig
   audioStart: number
+  playing: boolean
+  canPlay: boolean
+  onTogglePlay: () => void
+  onSeek: (time: number) => void
   loading: boolean
   loadingLabel: string
   onImportPsd: () => void
@@ -31,8 +44,8 @@ interface Point {
   y: number
 }
 
-const CHECKER_LIGHT = '#1b202b'
-const CHECKER_DARK = '#141821'
+const CHECKER_LIGHT = '#292929'
+const CHECKER_DARK = '#242424'
 
 function pickPatchUrl(manifest: BakeManifest, channel: string, value: string): string | null {
   const exact = manifest.patches[`${channel}.${value}`]
@@ -40,7 +53,24 @@ function pickPatchUrl(manifest: BakeManifest, channel: string, value: string): s
   return null
 }
 
-export function Stage({ manifest, defaultState, state, time, duration, fps, bpm, sway, audioStart, loading, loadingLabel, onImportPsd }: StageProps) {
+export function Stage({
+  manifest,
+  defaultState,
+  state,
+  time,
+  duration,
+  fps,
+  bpm,
+  sway,
+  audioStart,
+  playing,
+  canPlay,
+  onTogglePlay,
+  onSeek,
+  loading,
+  loadingLabel,
+  onImportPsd,
+}: StageProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const imagesRef = useRef<Map<string, HTMLImageElement>>(new Map())
@@ -185,29 +215,8 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, bpm,
     ctx.clearRect(0, 0, width, height)
 
     // backdrop
-    if (checker) {
-      if (!checkerPatternRef.current) {
-        const tile = document.createElement('canvas')
-        tile.width = 32
-        tile.height = 32
-        const tileCtx = tile.getContext('2d')
-        if (tileCtx) {
-          tileCtx.fillStyle = CHECKER_DARK
-          tileCtx.fillRect(0, 0, 32, 32)
-          tileCtx.fillStyle = CHECKER_LIGHT
-          tileCtx.fillRect(0, 0, 16, 16)
-          tileCtx.fillRect(16, 16, 16, 16)
-          checkerPatternRef.current = ctx.createPattern(tile, 'repeat')
-        }
-      }
-      if (checkerPatternRef.current) {
-        ctx.fillStyle = checkerPatternRef.current
-        ctx.fillRect(0, 0, width, height)
-      }
-    } else {
-      ctx.fillStyle = '#0e1118'
-      ctx.fillRect(0, 0, width, height)
-    }
+    ctx.fillStyle = '#181818'
+    ctx.fillRect(0, 0, width, height)
 
     if (!manifest || !imagesReady) return
     const base = imagesRef.current.get('__base__')
@@ -217,9 +226,40 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, bpm,
     const scale = Math.max(0.02, fitScale * zoom * swaySafetyScale(sway))
     const offsetX = (width - manifest.width * scale) / 2 + pan.x
     const offsetY = (height - manifest.height * scale) / 2 + pan.y
+    const imageWidth = manifest.width * scale
+    const imageHeight = manifest.height * scale
+
+    // checkerboard only behind the artboard
+    if (checker) {
+      if (!checkerPatternRef.current) {
+        const tile = document.createElement('canvas')
+        tile.width = 20
+        tile.height = 20
+        const tileCtx = tile.getContext('2d')
+        if (tileCtx) {
+          tileCtx.fillStyle = CHECKER_DARK
+          tileCtx.fillRect(0, 0, 20, 20)
+          tileCtx.fillStyle = CHECKER_LIGHT
+          tileCtx.fillRect(0, 0, 10, 10)
+          tileCtx.fillRect(10, 10, 10, 10)
+          checkerPatternRef.current = ctx.createPattern(tile, 'repeat')
+        }
+      }
+      if (checkerPatternRef.current) {
+        ctx.fillStyle = checkerPatternRef.current
+        ctx.fillRect(offsetX, offsetY, imageWidth, imageHeight)
+      }
+    } else {
+      ctx.fillStyle = '#242424'
+      ctx.fillRect(offsetX, offsetY, imageWidth, imageHeight)
+    }
+    ctx.strokeStyle = '#3d3d3d'
+    ctx.lineWidth = 1
+    ctx.strokeRect(offsetX + 0.5, offsetY + 0.5, imageWidth - 1, imageHeight - 1)
+
     const motion = swayTransform(time, bpm, sway, audioStart)
-    const pivotX = offsetX + manifest.width * scale / 2
-    const pivotY = offsetY + manifest.height * scale
+    const pivotX = offsetX + imageWidth / 2
+    const pivotY = offsetY + imageHeight
 
     ctx.save()
     ctx.translate(pivotX, pivotY)
@@ -308,41 +348,45 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, bpm,
   )
 
   return (
-    <div className="stage" ref={containerRef}>
-      <canvas
-        ref={canvasRef}
-        className={`stage-canvas ${panning ? 'panning' : ''}`}
-        style={{ width: '100%', height: '100%' }}
-        aria-label="预览舞台：拖拽平移，滚轮缩放，双击复位"
-        data-pan-x={Math.round(pan.x)}
-        data-pan-y={Math.round(pan.y)}
-        onPointerDown={pointerDown}
-        onPointerMove={pointerMove}
-        onPointerUp={pointerEnd}
-        onPointerCancel={pointerEnd}
-        onDoubleClick={resetView}
-      />
-
-      <div className="stage-toolbar">
-        <button className="icon-btn" title="适配窗口并复位平移" onClick={resetView}>
-          <IconFit />
-        </button>
-        <button className="icon-btn" title="缩小" onClick={() => zoomTo(zoom - 0.1)}>
-          <IconZoomOut />
-        </button>
-        <span className="zoom-label">{Math.round(zoom * 100)}%</span>
-        <button className="icon-btn" title="放大" onClick={() => zoomTo(zoom + 0.1)}>
-          <IconZoomIn />
-        </button>
-        <span className="toolbar-sep" />
-        <button
-          className={`chip-toggle ${checker ? 'active' : ''}`}
-          title="棋盘格透明背景"
-          onClick={() => setChecker((value) => !value)}
-        >
-          棋盘格
-        </button>
+    <div className="stage">
+      <div className="stage-head">
+        <span className="stage-title">预览</span>
+        <div className="stage-toolbar">
+          <button className="icon-btn" title="缩小" onClick={() => zoomTo(zoom - 0.1)}>
+            <IconZoomOut />
+          </button>
+          <span className="zoom-label">{Math.round(zoom * 100)}%</span>
+          <button className="icon-btn" title="放大" onClick={() => zoomTo(zoom + 0.1)}>
+            <IconZoomIn />
+          </button>
+          <button className="icon-btn" title="适配窗口并复位平移" onClick={resetView}>
+            <IconFit />
+          </button>
+          <span className="toolbar-sep" />
+          <button
+            className={`chip-toggle ${checker ? 'active' : ''}`}
+            title="棋盘格透明背景"
+            onClick={() => setChecker((value) => !value)}
+          >
+            棋盘格
+          </button>
+        </div>
       </div>
+
+      <div className="stage-view" ref={containerRef}>
+        <canvas
+          ref={canvasRef}
+          className={`stage-canvas ${panning ? 'panning' : ''}`}
+          style={{ width: '100%', height: '100%' }}
+          aria-label="预览舞台：拖拽平移，滚轮缩放，双击复位"
+          data-pan-x={Math.round(pan.x)}
+          data-pan-y={Math.round(pan.y)}
+          onPointerDown={pointerDown}
+          onPointerMove={pointerMove}
+          onPointerUp={pointerEnd}
+          onPointerCancel={pointerEnd}
+          onDoubleClick={resetView}
+        />
 
       {!hasCanvas && !loading ? (
         <div className="stage-empty">
@@ -385,10 +429,6 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, bpm,
 
       {manifest ? (
         <div className="stage-hud">
-          <div className="stage-hud-left">
-            <span className="timecode">{formatTimecode(time, true, fps)}</span>
-            <span className="hud-muted">/ {formatTimecode(duration, false)}</span>
-          </div>
           <div className="stage-hud-right">
             {stageStateChips.map((chip) => (
               <span key={chip.key} className="state-chip" title={chip.key}>
@@ -402,6 +442,32 @@ export function Stage({ manifest, defaultState, state, time, duration, fps, bpm,
           </div>
         </div>
       ) : null}
+      </div>
+
+      <div className="stage-foot">
+        <button className="icon-btn" title="上一帧" onClick={() => onSeek(Math.max(0, time - 1 / fps))}>
+          <IconChevronRight className="flip-x" />
+        </button>
+        <button
+          className="play-btn"
+          onClick={onTogglePlay}
+          disabled={!canPlay}
+          title={playing ? '暂停（空格）' : '播放（空格）'}
+        >
+          {playing ? <IconPause size={15} /> : <IconPlay size={15} />}
+        </button>
+        <button
+          className="icon-btn"
+          title="下一帧"
+          onClick={() => onSeek(Math.min(duration, time + 1 / fps))}
+        >
+          <IconChevronRight />
+        </button>
+        <span className="stage-time">
+          <span className="transport-tc">{formatTimecode(time, true, fps)}</span>
+          <span className="transport-duration">/ {formatTimecode(duration, false)}</span>
+        </span>
+      </div>
     </div>
   )
 }

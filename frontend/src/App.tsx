@@ -91,7 +91,7 @@ interface LayoutState {
   timeline: number
 }
 
-const LAYOUT_KEY = 'mocadiff.layout.v1'
+const LAYOUT_KEY = 'mocadiff.layout.v2'
 const LAYOUT_LIMITS: Record<ResizeKind, { min: number; max: number }> = {
   left: { min: 240, max: 540 },
   right: { min: 280, max: 580 },
@@ -106,7 +106,7 @@ function clampLayoutSize(kind: ResizeKind, value: number, viewportHeight = 900):
 }
 
 function loadLayout(): LayoutState {
-  const fallback: LayoutState = { left: 300, right: 340, timeline: 250 }
+  const fallback: LayoutState = { left: 234, right: 274, timeline: 228 }
   try {
     const raw = window.localStorage.getItem(LAYOUT_KEY)
     if (!raw) return fallback
@@ -1308,12 +1308,6 @@ export default function App() {
         onImportSvp={openSvpPicker}
         onImportAudio={openAudioPicker}
         onExport={handleExport}
-        playing={playing}
-        canPlay={duration > 0}
-        onTogglePlay={togglePlay}
-        time={time}
-        duration={duration}
-        fps={fps}
         mockMode={mockMode}
         onToggleMock={toggleMock}
         health={health}
@@ -1422,6 +1416,10 @@ export default function App() {
             bpm={bpm}
             sway={sway}
             audioStart={offset}
+            playing={playing}
+            canPlay={duration > 0}
+            onTogglePlay={togglePlay}
+            onSeek={seek}
             loading={bakeState.status === 'loading'}
             loadingLabel="烘焙中"
             onImportPsd={openPsdPicker}

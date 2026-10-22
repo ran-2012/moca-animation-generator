@@ -42,14 +42,14 @@ export function AudioWave({ peaks, duration, audioDuration, start, bpm, time }: 
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, width, height)
-    ctx.fillStyle = 'rgba(10, 13, 20, 0.9)'
+    ctx.fillStyle = '#1e1e1e'
     ctx.fillRect(0, 0, width, height)
 
     if (bpm && bpm > 0 && duration > 0) {
       const beat = 60 / bpm
       const beatPx = (beat / duration) * width
       if (beatPx >= 6) {
-        ctx.strokeStyle = 'rgba(124, 92, 255, 0.16)'
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)'
         ctx.lineWidth = 1
         const audioEnd = start + audioDuration
         const from = audioDuration > 0 ? Math.max(0, start) : 0
@@ -81,14 +81,14 @@ export function AudioWave({ peaks, duration, audioDuration, start, bpm, time }: 
         drawWaveform(ctx, peaks, x1 - x0, height, {
           top: 6,
           bottom: height - 6,
-          color: 'rgba(86, 209, 224, 0.55)',
+          color: 'rgba(78, 201, 176, 0.6)',
           centerColor: 'rgba(255, 255, 255, 0.07)',
         })
         ctx.restore()
       }
       if (duration > 0) {
         const x = clamp(time / duration, 0, 1) * width
-        ctx.fillStyle = '#ff6b8a'
+        ctx.fillStyle = '#55a5db'
         ctx.fillRect(x - 0.75, 0, 1.5, height)
       }
     } else if (peaks && peaks.length > 0) {

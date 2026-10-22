@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import type { Blink, SwayConfig, Timeline } from '../types'
+import type { Blink, SwayConfig, Timeline, TimelineDensity } from '../types'
 import { clamp } from '../lib/format'
 import { swayEvents } from '../lib/sway'
 import { pickTickStep, VISEME_COLORS } from '../lib/timeline'
@@ -16,14 +16,15 @@ interface Props {
   audioStart: number
   audioDuration: number
   sway: SwayConfig
+  density: TimelineDensity
   viewStartFrac: number
   viewSpanFrac: number
   onSeek: (time: number) => void
   onAudioStartChange: (value: number) => void
   onViewChange: (view: { start: number; span: number }) => void
+  onDensityChange: (value: TimelineDensity) => void
 }
 
-type Density = 'compact' | 'normal' | 'expanded'
 type TrackKind = 'blocks' | 'pitch' | 'events' | 'waveform'
 
 interface TrackRow {
@@ -35,10 +36,13 @@ interface TrackRow {
 }
 
 const HEADER_W = 112
+const GROUP_W = 22
+const MIN_GROUP_H = 16
 const RULER_H = 24
-const GROUP_H = 25
-const DENSITY_HEIGHT: Record<Density, number> = { compact: 28, normal: 40, expanded: 58 }
-const GROUP_LABELS = { source: 'SVP 原始数据', animation: '生成动画', audio: '音频' }
+const DENSITY_HEIGHT: Record<TimelineDensity, number> = { compact: 28, normal: 40, expanded: 58 }
+const GROUP_ORDER = ['source', 'animation', 'audio'] as const
+type GroupId = (typeof GROUP_ORDER)[number]
+const GROUP_LABELS: Record<GroupId, string> = { source: 'SVP 原始数据', animation: '生成动画', audio: '音频' }
 
 function labelTime(value: number): string {
   const minute = Math.floor(value / 60)
@@ -53,15 +57,14 @@ function noteName(midi: number): string {
 
 export function MultiTrackTimeline(props: Props) {
   const {
-    timeline, blinks, peaks, duration, time, bpm, audioStart, audioDuration, sway,
-    viewStartFrac, viewSpanFrac, onSeek, onAudioStartChange, onViewChange,
+    timeline, blinks, peaks, duration, time, bpm, audioStart, audioDuration, sway, density,
+    viewStartFrac, viewSpanFrac, onSeek, onAudioStartChange, onViewChange, onDensityChange,
   } = props
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const rulerRef = useRef<HTMLCanvasElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const dragRef = useRef<{ kind: 'seek' | 'audio'; x: number; audioStart: number } | null>(null)
   const [width, setWidth] = useState(1)
-  const [density, setDensity] = useState<Density>(() => (localStorage.getItem('mocadiff.timeline.density') as Density) || 'normal')
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem('mocadiff.timeline.collapsed') || '[]') as string[]) }
     catch { return new Set() }
@@ -76,9 +79,8 @@ export function MultiTrackTimeline(props: Props) {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem('mocadiff.timeline.density', density)
     localStorage.setItem('mocadiff.timeline.collapsed', JSON.stringify([...collapsed]))
-  }, [collapsed, density])
+  }, [collapsed])
 
   const rows = useMemo<TrackRow[]>(() => {
     const source = timeline?.sourceTracks
@@ -102,18 +104,20 @@ export function MultiTrackTimeline(props: Props) {
   const layout = useMemo(() => {
     const rowHeight = DENSITY_HEIGHT[density]
     const visible: Array<TrackRow & { y: number; height: number }> = []
-    const groups: Array<{ id: string; y: number }> = []
+    const groups: Array<{ id: GroupId; y: number; height: number }> = []
     let y = 0
-    for (const group of ['source', 'animation', 'audio'] as const) {
-      groups.push({ id: group, y })
-      y += GROUP_H
-      if (collapsed.has(group)) continue
-      for (const row of rows.filter((candidate) => candidate.group === group)) {
-        if (row.items.length === 0 && !['mouth', 'blink', 'sway', 'waveform'].includes(row.id)) continue
-        const height = row.kind === 'pitch' || row.kind === 'waveform' ? Math.round(rowHeight * 1.6) : rowHeight
-        visible.push({ ...row, y, height })
-        y += height
+    for (const group of GROUP_ORDER) {
+      const start = y
+      if (!collapsed.has(group)) {
+        for (const row of rows.filter((candidate) => candidate.group === group)) {
+          if (row.items.length === 0 && !['mouth', 'blink', 'sway', 'waveform'].includes(row.id)) continue
+          const height = row.kind === 'pitch' || row.kind === 'waveform' ? Math.round(rowHeight * 1.6) : rowHeight
+          visible.push({ ...row, y, height })
+          y += height
+        }
       }
+      if (y === start) y += MIN_GROUP_H
+      groups.push({ id: group, y: start, height: y - start })
     }
     return { rows: visible, groups, height: Math.max(y, 120) }
   }, [collapsed, density, rows])
@@ -122,10 +126,10 @@ export function MultiTrackTimeline(props: Props) {
     const total = Math.max(duration, 1)
     const start = clamp(viewStartFrac, 0, 1) * total
     const span = clamp(viewSpanFrac, 0.002, 1) * total
-    return { total, start, span, end: start + span, plotWidth: Math.max(1, width - HEADER_W - 8) }
+    return { total, start, span, end: start + span, plotWidth: Math.max(1, width - GROUP_W - HEADER_W - 8) }
   }, [duration, viewSpanFrac, viewStartFrac, width])
 
-  const xAt = useCallback((value: number) => HEADER_W + ((value - view.start) / view.span) * view.plotWidth, [view])
+  const xAt = useCallback((value: number) => GROUP_W + HEADER_W + ((value - view.start) / view.span) * view.plotWidth, [view])
 
   const drawRuler = useCallback(() => {
     const canvas = rulerRef.current
@@ -137,7 +141,8 @@ export function MultiTrackTimeline(props: Props) {
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.fillStyle = '#252526'; ctx.fillRect(0, 0, width, RULER_H)
-    ctx.fillStyle = '#999999'; ctx.font = '9px Consolas, monospace'; ctx.fillText('轨道', 10, 15)
+    ctx.fillStyle = '#2a2a2a'; ctx.fillRect(0, 0, GROUP_W, RULER_H)
+    ctx.fillStyle = '#999999'; ctx.font = '9px Consolas, monospace'; ctx.fillText('轨道', GROUP_W + 10, 15)
     const step = pickTickStep(view.span)
     for (let tick = Math.ceil(view.start / step) * step; tick <= view.end; tick += step) {
       const x = xAt(tick)
@@ -160,9 +165,23 @@ export function MultiTrackTimeline(props: Props) {
     ctx.fillStyle = '#1e1e1e'; ctx.fillRect(0, 0, width, layout.height)
 
     for (const group of layout.groups) {
-      ctx.fillStyle = '#2d2d2d'; ctx.fillRect(0, group.y, width, GROUP_H)
-      ctx.fillStyle = '#cccccc'; ctx.font = '600 10px system-ui';
-      ctx.fillText(`${collapsed.has(group.id) ? '▸' : '▾'} ${GROUP_LABELS[group.id as keyof typeof GROUP_LABELS]}`, 9, group.y + 17)
+      const folded = collapsed.has(group.id)
+      ctx.fillStyle = '#2a2a2a'; ctx.fillRect(0, group.y, GROUP_W, group.height)
+      ctx.strokeStyle = '#303030'; ctx.strokeRect(0.5, group.y + 0.5, GROUP_W - 1, group.height - 1)
+      if (folded && group.height <= 24) {
+        ctx.fillStyle = '#8a8a8a'; ctx.font = '10px system-ui'
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText('▸', GROUP_W / 2, group.y + group.height / 2)
+        ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
+        continue
+      }
+      ctx.save()
+      ctx.beginPath(); ctx.rect(0, group.y, GROUP_W, group.height); ctx.clip()
+      ctx.translate(GROUP_W / 2, group.y + group.height / 2); ctx.rotate(-Math.PI / 2)
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+      ctx.fillStyle = folded ? '#8a8a8a' : '#c8c8c8'; ctx.font = '600 10px system-ui'
+      ctx.fillText(`${folded ? '▸' : '▾'} ${GROUP_LABELS[group.id]}`, 0, 0)
+      ctx.restore()
     }
 
     const pitchItems = timeline?.sourceTracks?.pitch ?? []
@@ -171,10 +190,10 @@ export function MultiTrackTimeline(props: Props) {
     const pitchMax = Math.ceil(Math.max(...pitchValues, 72) + 1)
 
     for (const row of layout.rows) {
-      ctx.fillStyle = '#252526'; ctx.fillRect(0, row.y, HEADER_W, row.height)
-      ctx.fillStyle = '#bbbbbb'; ctx.font = '10px system-ui'; ctx.fillText(row.label, 18, row.y + 17)
-      ctx.strokeStyle = '#303030'; ctx.strokeRect(.5, row.y + .5, width - 1, row.height - 1)
-      ctx.save(); ctx.beginPath(); ctx.rect(HEADER_W, row.y, view.plotWidth, row.height); ctx.clip()
+      ctx.fillStyle = '#252526'; ctx.fillRect(GROUP_W, row.y, HEADER_W, row.height)
+      ctx.fillStyle = '#bbbbbb'; ctx.font = '10px system-ui'; ctx.fillText(row.label, GROUP_W + 18, row.y + 17)
+      ctx.strokeStyle = '#303030'; ctx.strokeRect(GROUP_W + 0.5, row.y + 0.5, width - GROUP_W - 1, row.height - 1)
+      ctx.save(); ctx.beginPath(); ctx.rect(GROUP_W + HEADER_W, row.y, view.plotWidth, row.height); ctx.clip()
 
       if (bpm && bpm > 0) {
         const beat = 60 / bpm
@@ -190,7 +209,7 @@ export function MultiTrackTimeline(props: Props) {
           const next = row.items[index + 1] as Record<string, unknown> | undefined
           const end = Number(item.end ?? next?.t ?? start + 0.08)
           const x0 = xAt(start); const x1 = xAt(end)
-          if (x1 < HEADER_W || x0 > width) return
+          if (x1 < GROUP_W + HEADER_W || x0 > width) return
           const viseme = String(item.viseme ?? '')
           ctx.fillStyle = VISEME_COLORS[viseme as keyof typeof VISEME_COLORS] ?? (row.id === 'phonemes' ? '#4e7a9a' : '#56667a')
           ctx.globalAlpha = .85; ctx.fillRect(x0 + 1, row.y + 5, Math.max(2, x1 - x0 - 2), row.height - 10); ctx.globalAlpha = 1
@@ -218,7 +237,7 @@ export function MultiTrackTimeline(props: Props) {
         const x0 = xAt(audioStart); const x1 = xAt(audioStart + audioDuration)
         if (peaks && audioDuration > 0) {
           ctx.save(); ctx.translate(x0, 0); drawWaveform(ctx, peaks, x1 - x0, row.y + row.height, { top: row.y + 4, bottom: row.y + row.height - 4, color: 'rgba(78,201,176,.55)' }); ctx.restore()
-        } else { ctx.fillStyle = '#8a8a8a'; ctx.fillText('未导入音频', HEADER_W + 12, row.y + 20) }
+        } else { ctx.fillStyle = '#8a8a8a'; ctx.fillText('未导入音频', GROUP_W + HEADER_W + 12, row.y + 20) }
       }
       ctx.restore()
     }
@@ -230,7 +249,7 @@ export function MultiTrackTimeline(props: Props) {
 
   const timeAt = (clientX: number): number => {
     const rect = viewportRef.current?.getBoundingClientRect()
-    const local = clamp(clientX - (rect?.left ?? 0) - HEADER_W, 0, view.plotWidth)
+    const local = clamp(clientX - (rect?.left ?? 0) - GROUP_W - HEADER_W, 0, view.plotWidth)
     return view.start + (local / view.plotWidth) * view.span
   }
 
@@ -243,8 +262,8 @@ export function MultiTrackTimeline(props: Props) {
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = viewportRef.current?.getBoundingClientRect()
     const contentY = event.clientY - (rect?.top ?? 0) - RULER_H + (viewportRef.current?.scrollTop ?? 0)
-    const group = layout.groups.find((item) => contentY >= item.y && contentY < item.y + GROUP_H)
-    if (group && event.clientX - (rect?.left ?? 0) < HEADER_W) {
+    const group = layout.groups.find((item) => contentY >= item.y && contentY < item.y + item.height)
+    if (group && event.clientX - (rect?.left ?? 0) < GROUP_W) {
       setCollapsed((current) => { const next = new Set(current); next.has(group.id) ? next.delete(group.id) : next.add(group.id); return next })
       return
     }
@@ -270,8 +289,8 @@ export function MultiTrackTimeline(props: Props) {
     if (!(event.ctrlKey || event.shiftKey || event.altKey)) return
     event.preventDefault()
     if (event.altKey) {
-      const order: Density[] = ['compact', 'normal', 'expanded']; const index = order.indexOf(density)
-      setDensity(order[clamp(index + (event.deltaY > 0 ? -1 : 1), 0, order.length - 1)])
+      const order: TimelineDensity[] = ['compact', 'normal', 'expanded']; const index = order.indexOf(density)
+      onDensityChange(order[clamp(index + (event.deltaY > 0 ? -1 : 1), 0, order.length - 1)])
       return
     }
     const span = clamp(viewSpanFrac, .002, 1)
@@ -279,10 +298,10 @@ export function MultiTrackTimeline(props: Props) {
       const delta = (event.deltaY || event.deltaX) / view.plotWidth * span
       onViewChange({ start: clamp(viewStartFrac + delta, 0, 1 - span), span }); return
     }
-    const rect = viewportRef.current?.getBoundingClientRect(); const anchor = clamp((event.clientX - (rect?.left ?? 0) - HEADER_W) / view.plotWidth, 0, 1)
+    const rect = viewportRef.current?.getBoundingClientRect(); const anchor = clamp((event.clientX - (rect?.left ?? 0) - GROUP_W - HEADER_W) / view.plotWidth, 0, 1)
     const nextSpan = clamp(span * Math.exp(event.deltaY * .0014), .002, 1)
     onViewChange({ start: clamp(viewStartFrac + anchor * span - anchor * nextSpan, 0, 1 - nextSpan), span: nextSpan })
-  }, [density, onViewChange, view.plotWidth, viewSpanFrac, viewStartFrac])
+  }, [density, onDensityChange, onViewChange, view.plotWidth, viewSpanFrac, viewStartFrac])
 
   useEffect(() => {
     const element = viewportRef.current
@@ -293,16 +312,6 @@ export function MultiTrackTimeline(props: Props) {
 
   return (
     <div className="multi-timeline">
-      <div className="multi-timeline-tools">
-        <span>{timeline?.mode?.animationModeId ?? 'classic'} · {timeline?.mode?.mappingSetId ?? 'standard'}</span>
-        <div className="segmented" aria-label="轨道高度">
-          {(['compact', 'normal', 'expanded'] as Density[]).map((value) => (
-            <button key={value} className={density === value ? 'active' : ''} onClick={() => setDensity(value)}>
-              {{ compact: '紧凑', normal: '标准', expanded: '展开' }[value]}
-            </button>
-          ))}
-        </div>
-      </div>
       <canvas ref={rulerRef} className="timeline-ruler" />
       <div
         ref={viewportRef}

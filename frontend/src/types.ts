@@ -26,6 +26,7 @@ export type BrowSlot = 'neutral' | 'angry' | 'question' | 'surprise' | 'sad'
 export type CheekSlot = 'normal' | 'blush' | 'deep'
 export type ChannelName = 'mouth' | 'eyes' | 'brow' | 'cheek' | 'sweat' | 'eyeEffect'
 export type AnimationModeId = 'classic' | 'clear' | 'natural' | 'expressive'
+export type TimelineDensity = 'compact' | 'normal' | 'expanded'
 
 export interface Channels {
   mouth: Partial<Record<MouthSlot, string | null>>
@@ -76,6 +77,19 @@ export interface PatchManifest {
   offset: [number, number]
   width: number
   height: number
+  z?: number
+}
+
+export interface StaticLayerManifest {
+  url: string
+  offset: [number, number]
+  width: number
+  height: number
+  z: number
+  name: string
+  path: string
+  group: string
+  visible?: boolean
 }
 
 export interface BakeManifest {
@@ -84,6 +98,7 @@ export interface BakeManifest {
   height: number
   base: { url: string }
   patches: Record<string, PatchManifest>
+  layers?: Record<string, StaticLayerManifest>
   zorder: string[]
   profileVersion: string
   bakedAt: string
@@ -283,6 +298,7 @@ export interface RenderRequestPayload {
   brow: string | null
   cheek: string | null
   sway?: RenderSwayConfig
+  hiddenLayers?: string[]
 }
 
 export interface RenderJobInfo {
@@ -323,6 +339,8 @@ export interface SessionState {
   bpm: number | null
   offset: number
   sway?: SwayConfig
+  exclusiveGroups?: string[]
+  manifestStale?: boolean
   updatedAt?: string | null
 }
 

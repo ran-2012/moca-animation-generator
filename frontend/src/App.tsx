@@ -71,6 +71,7 @@ import type {
   StageState,
   SvpUploadInfo,
   Timeline as TimelineData,
+  TimelineDensity,
   ToastMessage,
   Viseme,
   SwayConfig,
@@ -92,6 +93,7 @@ interface LayoutState {
 }
 
 const LAYOUT_KEY = 'mocadiff.layout.v2'
+const DENSITIES: TimelineDensity[] = ['compact', 'normal', 'expanded']
 const LAYOUT_LIMITS: Record<ResizeKind, { min: number; max: number }> = {
   left: { min: 240, max: 540 },
   right: { min: 280, max: 580 },
@@ -121,6 +123,11 @@ function loadLayout(): LayoutState {
   }
 }
 
+function loadDensity(): TimelineDensity {
+  const saved = window.localStorage.getItem('mocadiff.timeline.density')
+  return DENSITIES.includes(saved as TimelineDensity) ? (saved as TimelineDensity) : 'normal'
+}
+
 export default function App() {
   // data source -------------------------------------------------------------
   const [health, setHealth] = useState<HealthResult>({ online: false })
@@ -137,8 +144,10 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [bakeState, setBakeState] = useState<BakeUiState>({ status: 'idle' })
   const [manifest, setManifest] = useState<BakeManifest | null>(null)
+  const [manifestStale, setManifestStale] = useState(false)
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())
   const [hiddenLayers, setHiddenLayers] = useState<Set<string>>(new Set())
+  const [exclusiveGroups, setExclusiveGroups] = useState<Set<string>>(new Set())
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
 
   // SVP / timeline ----------------------------------------------------------
@@ -165,6 +174,7 @@ export default function App() {
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [timelineView, setTimelineView] = useState({ start: 0, span: 1 })
+  const [timelineDensity, setTimelineDensity] = useState<TimelineDensity>(loadDensity)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [statusText, setStatusText] = useState('就绪 · 导入 PSD 开始')
   const [busy, setBusy] = useState<string | null>(null)
@@ -201,6 +211,14 @@ export default function App() {
       // storage may be unavailable; sizing still works for this session
     }
   }, [layout])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mocadiff.timeline.density', timelineDensity)
+    } catch {
+      // storage may be unavailable; the current session keeps the choice
+    }
+  }, [timelineDensity])
 
   useEffect(() => {
     const onMove = (event: PointerEvent): void => {
@@ -279,6 +297,7 @@ export default function App() {
       profile,
       hiddenGroups: Array.from(hiddenGroups),
       hiddenLayers: Array.from(hiddenLayers),
+      exclusiveGroups: Array.from(exclusiveGroups),
       selectedLayerId,
       svp,
       selectedTrack,
@@ -290,6 +309,7 @@ export default function App() {
       bpm,
       offset,
       sway,
+      manifestStale: manifestStale && Boolean(manifest),
       updatedAt: null,
     }),
     [
@@ -299,6 +319,7 @@ export default function App() {
       profile,
       hiddenGroups,
       hiddenLayers,
+      exclusiveGroups,
       selectedLayerId,
       svp,
       selectedTrack,
@@ -310,6 +331,7 @@ export default function App() {
       bpm,
       offset,
       sway,
+      manifestStale,
     ],
   )
 
@@ -367,6 +389,68 @@ export default function App() {
       notify('error', `${context}失败：${message}`)
     },
     [describeError, notify],
+  )
+
+  // Mapping / visibility edits only invalidate the baked textures.  Keep the
+  // previous manifest on screen so the preview never blanks out; the stale
+  // flag blocks export and nudges the user to re-bake.
+  const invalidateBake = useCallback(() => {
+    setManifestStale(true)
+    setBakeState({ status: 'idle' })
+  }, [])
+
+  // Layers referenced by semantic channels are driven by the animation and
+  // cannot be toggled by hand; everything else stays freely switchable.
+  const mappedIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (profile) {
+      for (const channel of Object.values(profile.channels) as Array<Record<string, string | null>>) {
+        for (const value of Object.values(channel)) {
+          if (value) ids.add(value)
+        }
+      }
+    }
+    return ids
+  }, [profile])
+
+  const layerIndex = useMemo(() => {
+    const nodes = new Map<string, LayerNode>()
+    const groups = new Map<string, LayerNode>()
+    const walk = (node: LayerNode): void => {
+      nodes.set(node.id, node)
+      if (node.kind === 'group') groups.set(node.path, node)
+      node.children.forEach(walk)
+    }
+    if (tree) walk(tree)
+    return { nodes, groups }
+  }, [tree])
+
+  const hiddenStaticLayers = useMemo(() => {
+    const hidden = new Set(hiddenLayers)
+    for (const [id, layer] of Object.entries(manifest?.layers ?? {})) {
+      for (const group of hiddenGroups) {
+        if (layer.path === group || layer.path.startsWith(`${group}.`)) {
+          hidden.add(id)
+          break
+        }
+      }
+    }
+    return hidden
+  }, [hiddenGroups, hiddenLayers, manifest])
+
+  // Exclusive groups behave like radio buttons: showing one child hides its siblings.
+  const applyExclusive = useCallback(
+    (node: LayerNode, layers: Set<string>, groups: Set<string>) => {
+      const separator = node.path.lastIndexOf('.')
+      const parentPath = separator >= 0 ? node.path.slice(0, separator) : ''
+      if (!exclusiveGroups.has(parentPath)) return
+      for (const sibling of layerIndex.groups.get(parentPath)?.children ?? []) {
+        if (sibling.id === node.id || (sibling.kind === 'pixel' && mappedIds.has(sibling.id))) continue
+        if (sibling.kind === 'pixel') layers.add(sibling.id)
+        else groups.add(sibling.path)
+      }
+    },
+    [exclusiveGroups, layerIndex, mappedIds],
   )
 
   // initial data-source detection + restore the last backend session ----------
@@ -464,6 +548,7 @@ export default function App() {
       setProfile(session.profile ?? null)
       setHiddenGroups(new Set(session.hiddenGroups ?? []))
       setHiddenLayers(new Set(session.hiddenLayers ?? []))
+      setExclusiveGroups(new Set(session.exclusiveGroups ?? []))
       setSelectedLayerId(session.selectedLayerId ?? null)
       setSvp(session.svp ?? null)
       setSelectedTrack(session.selectedTrack ?? null)
@@ -496,6 +581,7 @@ export default function App() {
           setTree(treeData)
           if (manifestData) {
             setManifest(manifestData)
+            setManifestStale(Boolean(session.manifestStale))
             setBakeState({ status: 'done', manifest: manifestData })
           }
         } catch (error) {
@@ -607,8 +693,10 @@ export default function App() {
     setAutomapWarnings([])
     setBakeState({ status: 'idle' })
     setManifest(null)
+    setManifestStale(false)
     setHiddenGroups(new Set())
     setHiddenLayers(new Set())
+    setExclusiveGroups(new Set())
     setSelectedLayerId(null)
     setSvp(null)
     setSelectedTrack(null)
@@ -639,6 +727,7 @@ export default function App() {
       profile: null,
       hiddenGroups: [],
       hiddenLayers: [],
+      exclusiveGroups: [],
       selectedLayerId: null,
       svp: null,
       selectedTrack: null,
@@ -719,6 +808,7 @@ export default function App() {
         setDirty(false)
         setAutomapWarnings([])
         setManifest(null)
+        setManifestStale(false)
         setBakeState({ status: 'idle' })
         setHiddenGroups(new Set())
         setHiddenLayers(new Set())
@@ -755,8 +845,7 @@ export default function App() {
       setAutomapWarnings(result.warnings)
       setHiddenGroups(new Set(result.profile.base.hiddenGroups))
       setHiddenLayers(new Set(result.profile.base.hiddenLayers))
-      setManifest(null)
-      setBakeState({ status: 'idle' })
+      invalidateBake()
       setDirty(true)
       setStatusText(`自动识别完成 · 已填充 ${slots} 个槽位，请确认后保存`)
       notify('success', `自动识别完成，填充 ${slots} 个语义槽位`)
@@ -785,10 +874,9 @@ export default function App() {
         : current.mappingSets
       return { ...current, channels, mappingSets }
     })
-    setManifest(null)
-    setBakeState({ status: 'idle' })
+    invalidateBake()
     setDirty(true)
-  }, [mappingSetId])
+  }, [invalidateBake, mappingSetId])
 
   const handleMappingSetChange = useCallback((value: string) => {
     setProfile((current) => {
@@ -801,13 +889,12 @@ export default function App() {
       }
     })
     setMappingSetId(value)
-    setManifest(null)
-    setBakeState({ status: 'idle' })
+    invalidateBake()
     setDirty(true)
     setTimeline(null)
     setBlinks([])
     setTimelineWarnings([])
-  }, [])
+  }, [invalidateBake])
 
   const updateDefaultState = useCallback((channel: ChannelName, value: string) => {
     setProfile((current) =>
@@ -815,38 +902,67 @@ export default function App() {
         ? { ...current, base: { ...current.base, defaultState: { ...current.base.defaultState, [channel]: value } } }
         : current,
     )
-    setManifest(null)
-    setBakeState({ status: 'idle' })
+    invalidateBake()
     setDirty(true)
-  }, [])
+  }, [invalidateBake])
 
   const toggleGroupVisibility = useCallback(
     (path: string) => {
-      const next = new Set(hiddenGroups)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      setHiddenGroups(next)
-      setProfile((current) => (current ? { ...current, base: { ...current.base, hiddenGroups: [...next] } } : current))
-      setManifest(null)
-      setBakeState({ status: 'idle' })
+      const turningOn = hiddenGroups.has(path)
+      const nextGroups = new Set(hiddenGroups)
+      const nextLayers = new Set(hiddenLayers)
+      if (turningOn) nextGroups.delete(path)
+      else nextGroups.add(path)
+      const node = layerIndex.groups.get(path)
+      if (turningOn && node) applyExclusive(node, nextLayers, nextGroups)
+      setHiddenGroups(nextGroups)
+      setHiddenLayers(nextLayers)
+      setProfile((current) =>
+        current
+          ? {
+              ...current,
+              base: { ...current.base, hiddenGroups: [...nextGroups], hiddenLayers: [...nextLayers] },
+            }
+          : current,
+      )
       setDirty(true)
     },
-    [hiddenGroups],
+    [applyExclusive, hiddenGroups, hiddenLayers, layerIndex],
   )
 
   const toggleLayerVisibility = useCallback(
     (id: string) => {
-      const next = new Set(hiddenLayers)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      setHiddenLayers(next)
-      setProfile((current) => (current ? { ...current, base: { ...current.base, hiddenLayers: [...next] } } : current))
-      setManifest(null)
-      setBakeState({ status: 'idle' })
+      if (mappedIds.has(id)) return
+      const turningOn = hiddenLayers.has(id)
+      const nextLayers = new Set(hiddenLayers)
+      const nextGroups = new Set(hiddenGroups)
+      if (turningOn) nextLayers.delete(id)
+      else nextLayers.add(id)
+      const node = layerIndex.nodes.get(id)
+      if (turningOn && node) applyExclusive(node, nextLayers, nextGroups)
+      setHiddenLayers(nextLayers)
+      setHiddenGroups(nextGroups)
+      setProfile((current) =>
+        current
+          ? {
+              ...current,
+              base: { ...current.base, hiddenGroups: [...nextGroups], hiddenLayers: [...nextLayers] },
+            }
+          : current,
+      )
       setDirty(true)
     },
-    [hiddenLayers],
+    [applyExclusive, hiddenGroups, hiddenLayers, layerIndex, mappedIds],
   )
+
+  const toggleExclusiveGroup = useCallback((path: string) => {
+    setExclusiveGroups((current) => {
+      const next = new Set(current)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }, [])
 
   const handleSaveProfile = useCallback(async () => {
     if (!psd || !profile) return
@@ -879,6 +995,13 @@ export default function App() {
       const started = performance.now()
       const result = await bake(psd.assetId, profile)
       setManifest(result)
+      setManifestStale(false)
+      const defaultHidden = Object.entries(result.layers ?? {})
+        .filter(([, layer]) => layer.visible === false)
+        .map(([id]) => id)
+      if (defaultHidden.length > 0) {
+        setHiddenLayers((current) => new Set([...current, ...defaultHidden]))
+      }
       setBakeState({ status: 'done', manifest: result })
       setStatusText(
         `烘焙完成 · ${(performance.now() - started).toFixed(1)}s · ${Object.keys(result.patches).length} patches`,
@@ -1240,18 +1363,6 @@ export default function App() {
     [blinks, defaultState, time, timeline],
   )
 
-  const mappedIds = useMemo(() => {
-    const ids = new Set<string>()
-    if (profile) {
-      for (const channel of Object.values(profile.channels) as Array<Record<string, string | null>>) {
-        for (const value of Object.values(channel)) {
-          if (value) ids.add(value)
-        }
-      }
-    }
-    return ids
-  }, [profile])
-
   const thumbFor = useCallback(
     (node: LayerNode): string | null => {
       if (node.kind !== 'pixel') return null
@@ -1372,10 +1483,12 @@ export default function App() {
               mappedIds={mappedIds}
               hiddenGroups={hiddenGroups}
               hiddenLayers={hiddenLayers}
+              exclusiveGroups={exclusiveGroups}
               selectedId={selectedLayerId}
               onSelect={handleSelectLayer}
               onToggleGroup={toggleGroupVisibility}
               onToggleLayer={toggleLayerVisibility}
+              onToggleExclusive={toggleExclusiveGroup}
             />
           </section>
 
@@ -1387,6 +1500,7 @@ export default function App() {
             saving={saving}
             busyAutomap={busyAutomap}
             bake={bakeState}
+            stale={manifestStale && Boolean(manifest)}
             onAutomap={() => void handleAutomap()}
             onSave={() => void handleSaveProfile()}
             onBake={() => void handleBake()}
@@ -1420,6 +1534,8 @@ export default function App() {
             canPlay={duration > 0}
             onTogglePlay={togglePlay}
             onSeek={seek}
+            stale={manifestStale && Boolean(manifest)}
+            hiddenLayers={hiddenStaticLayers}
             loading={bakeState.status === 'loading'}
             loadingLabel="烘焙中"
             onImportPsd={openPsdPicker}
@@ -1512,6 +1628,9 @@ export default function App() {
               <IconClock size={14} />
               时间轴
             </span>
+            <span className="timeline-mode" title="动画模式 · 素材方案">
+              {timeline?.mode?.animationModeId ?? 'classic'} · {timeline?.mode?.mappingSetId ?? 'standard'}
+            </span>
             <div className="timeline-head-actions">
               <button className="icon-btn small" onClick={togglePlay} disabled={duration <= 0} title="播放 / 暂停（空格）">
                 {playing ? <IconPause size={14} /> : <IconPlay size={14} />}
@@ -1537,6 +1656,18 @@ export default function App() {
               >
                 −
               </button>
+              <div className="segmented density-switch" role="group" aria-label="轨道高度">
+                {DENSITIES.map((value) => (
+                  <button
+                    key={value}
+                    className={timelineDensity === value ? 'active' : ''}
+                    onClick={() => setTimelineDensity(value)}
+                    title={`轨道高度：${{ compact: '紧凑', normal: '标准', expanded: '展开' }[value]}`}
+                  >
+                    {{ compact: '紧凑', normal: '标准', expanded: '展开' }[value]}
+                  </button>
+                ))}
+              </div>
               <button
                 className="mini-btn"
                 onClick={resetTimelineView}
@@ -1557,11 +1688,13 @@ export default function App() {
             audioStart={offset}
             audioDuration={audio?.durationSec ?? 0}
             sway={sway}
+            density={timelineDensity}
             viewStartFrac={timelineView.start}
             viewSpanFrac={timelineView.span}
             onSeek={seek}
             onAudioStartChange={handleAudioStart}
             onViewChange={handleTimelineView}
+            onDensityChange={setTimelineDensity}
           />
           <div className="timeline-legend">
             {VISEMES.map((viseme) => (
@@ -1640,7 +1773,9 @@ export default function App() {
         psdAssetId={psd?.assetId ?? null}
         psdWidth={psd?.width ?? 0}
         psdHeight={psd?.height ?? 0}
+        manifestStale={manifestStale && Boolean(manifest)}
         manifestReady={Boolean(manifest)}
+        hiddenLayers={Array.from(hiddenStaticLayers)}
         timeline={timeline}
         blinks={blinks}
         currentTime={time}

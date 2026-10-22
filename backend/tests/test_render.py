@@ -626,6 +626,28 @@ def test_frame_source_applies_beat_sway_without_changing_canvas_size() -> None:
     assert edge_frame.getbbox() == (0, 0, 10, 10)
 
 
+def test_frame_source_composes_static_layers_in_z_order() -> None:
+    assets = render_service.PreparedAssets(
+        width=10,
+        height=10,
+        base=Image.new("RGBA", (10, 10), (0, 0, 0, 0)),
+        patches={},
+        zorder=[],
+        default_state={},
+        source_width=10,
+        source_height=10,
+        layers={
+            "back": (Image.new("RGBA", (10, 10), (0, 0, 255, 255)), (0, 0), 0),
+            "front": (Image.new("RGBA", (2, 2), (255, 0, 0, 255)), (0, 0), 100),
+        },
+    )
+    source = render_service.FrameSource({"frames": []}, [], assets)
+    assert source.compose(0.0).getpixel((0, 0)) == (255, 0, 0, 255)
+
+    hidden = render_service.FrameSource({"frames": []}, [], assets, hidden_layers=["front"])
+    assert hidden.compose(0.0).getpixel((0, 0)) == (0, 0, 255, 255)
+
+
 def test_ffmpeg_command_flags() -> None:
     if shutil.which("ffmpeg") is None:
         pytest.skip("SKIP: 未找到 ffmpeg")

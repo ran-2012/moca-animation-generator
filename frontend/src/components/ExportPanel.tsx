@@ -23,6 +23,8 @@ interface ExportPanelProps {
   psdWidth: number
   psdHeight: number
   manifestReady: boolean
+  manifestStale: boolean
+  hiddenLayers: string[]
   timeline: Timeline | null
   blinks: Blink[]
   currentTime: number
@@ -53,6 +55,8 @@ export function ExportPanel({
   psdWidth,
   psdHeight,
   manifestReady,
+  manifestStale,
+  hiddenLayers,
   timeline,
   blinks,
   currentTime,
@@ -109,6 +113,7 @@ export function ExportPanel({
 
   const problems = useMemo(() => {
     const list: string[] = []
+    if (manifestStale) list.push('贴图已过期：图层可见性或映射有改动，请先在语义映射面板重新烘焙。')
     if (!psdAssetId || !manifestReady) list.push('缺少已烘焙的 PSD（manifest）：请先导入 PSD 并点击「烘焙」。')
     if (!timeline || timeline.frames.length === 0) list.push('缺少口型时间轴：请先导入 SVP、选择轨道并生成时间轴。')
     if (maxTimeline > 0 && durationSec <= 0) list.push('导出时长必须大于 0 秒。')
@@ -122,7 +127,7 @@ export function ExportPanel({
       )
     }
     return list
-  }, [durationSec, frameCount, manifestReady, maxTimeline, psdAssetId, startSec, timeline])
+  }, [durationSec, frameCount, manifestReady, manifestStale, maxTimeline, psdAssetId, startSec, timeline])
 
   const ready = problems.length === 0 && Boolean(psdAssetId) && Boolean(timeline)
   const busy = job !== null && (job.status === 'queued' || job.status === 'running')
@@ -151,6 +156,7 @@ export function ExportPanel({
       brow: brow || null,
       cheek: cheek || null,
       sway: { ...sway, bpm, audioStart },
+      hiddenLayers,
     }
     try {
       const created = await submitRender(payload)
@@ -163,7 +169,7 @@ export function ExportPanel({
     } finally {
       setSubmitting(false)
     }
-  }, [audioStart, background, blinks, bpm, brow, cheek, durationSec, format, onNotify, outFps, psdAssetId, ready, startSec, sway, timeline, width])
+  }, [audioStart, background, blinks, bpm, brow, cheek, durationSec, format, hiddenLayers, onNotify, outFps, psdAssetId, ready, startSec, sway, timeline, width])
 
   // poll the render job until it finishes
   const jobId = job?.jobId

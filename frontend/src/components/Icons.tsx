@@ -171,6 +171,15 @@ export function IconFit(props: Props) {
   )
 }
 
+export function IconLock(props: Props) {
+  return (
+    <svg {...svgProps(props)}>
+      <rect x="4" y="10" width="16" height="10" rx="1.5" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    </svg>
+  )
+}
+
 export function IconMusic(props: Props) {
   return (
     <svg {...svgProps(props)}>

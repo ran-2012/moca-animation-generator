@@ -37,6 +37,7 @@ def test_session_roundtrip_and_clear():
             profile={"psdAssetId": "abc123", "channels": {"mouth": {"a": "63"}}},
             hiddenGroups=["0.3.1"],
             hiddenLayers=["0.3.2"],
+            exclusiveGroups=["3"],
             selectedLayerId="63",
             svp={"assetId": "svp123", "tracks": [{"index": 5, "name": "未命名音轨"}]},
             selectedTrack=5,
@@ -47,6 +48,7 @@ def test_session_roundtrip_and_clear():
             bpm=76.0,
             offset=0.25,
             sway={"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offset": 0.25},
+            manifestStale=True,
         )
         saved_at = session_service.save(state)
         assert saved_at
@@ -64,7 +66,9 @@ def test_session_roundtrip_and_clear():
         assert loaded.offset == 0.25
         assert loaded.sway is not None
         assert loaded.sway.model_dump() == {"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offset": 0.25}
+        assert loaded.manifestStale is True
         assert loaded.hiddenGroups == ["0.3.1"]
+        assert loaded.exclusiveGroups == ["3"]
         assert loaded.updatedAt == saved_at
 
         # raw file is valid JSON with the saved envelope

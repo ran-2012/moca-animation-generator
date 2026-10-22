@@ -29,6 +29,8 @@ interface StageProps {
   canPlay: boolean
   onTogglePlay: () => void
   onSeek: (time: number) => void
+  stale: boolean
+  hiddenLayers: Set<string>
   loading: boolean
   loadingLabel: string
   onImportPsd: () => void
@@ -67,6 +69,8 @@ export function Stage({
   canPlay,
   onTogglePlay,
   onSeek,
+  stale,
+  hiddenLayers,
   loading,
   loadingLabel,
   onImportPsd,
@@ -105,6 +109,7 @@ export function Stage({
     if (!manifest) return
     const entries: Array<[string, string]> = [['__base__', manifest.base.url]]
     for (const [key, patch] of Object.entries(manifest.patches)) entries.push([key, patch.url])
+    for (const [id, layer] of Object.entries(manifest.layers ?? {})) entries.push([`layer:${id}`, layer.url])
     const map = new Map<string, HTMLImageElement>()
     let pending = entries.length
     let cancelled = false
@@ -289,25 +294,59 @@ export function Stage({
     }
 
     const order = manifest.zorder.length > 0 ? manifest.zorder : ['cheek', 'mouth', 'eyes', 'brow']
-    for (const channel of order) {
+    const patches: Array<{ z: number; image: HTMLImageElement; offset: [number, number]; width: number; height: number }> = []
+    order.forEach((channel, index) => {
       const wanted = channel === 'mouth' ? [state.mouthPose, state.viseme] : [channelValue[channel]]
-      if (wanted[0] === 'off') continue
+      if (wanted[0] === 'off') return
       const values = [...wanted, fallback[channel]].filter((value): value is string => Boolean(value))
       const patchKey = values.map((value) => `${channel}.${value}`).find((key) => manifest.patches[key])
-      if (!patchKey) continue
+      if (!patchKey) return
       const patch = manifest.patches[patchKey]
-      if (!patch) continue
       const image = imagesRef.current.get(patchKey)
-      if (!image || image.naturalWidth === 0) continue
-      const patchWidth = patch.width || image.naturalWidth
-      const patchHeight = patch.height || image.naturalHeight
-      ctx.drawImage(
+      if (!patch || !image || image.naturalWidth === 0) return
+      patches.push({
+        z: patch.z ?? 1_000_000 + index,
         image,
-        offsetX + patch.offset[0] * scale,
-        offsetY + patch.offset[1] * scale,
-        patchWidth * scale,
-        patchHeight * scale,
-      )
+        offset: patch.offset,
+        width: patch.width || image.naturalWidth,
+        height: patch.height || image.naturalHeight,
+      })
+    })
+
+    if (manifest.layers) {
+      const drawables = [...patches]
+      for (const [id, layer] of Object.entries(manifest.layers)) {
+        if (hiddenLayers.has(id)) continue
+        const image = imagesRef.current.get(`layer:${id}`)
+        if (!image || image.naturalWidth === 0) continue
+        drawables.push({
+          z: layer.z,
+          image,
+          offset: layer.offset,
+          width: layer.width || image.naturalWidth,
+          height: layer.height || image.naturalHeight,
+        })
+      }
+      drawables.sort((a, b) => a.z - b.z)
+      for (const item of drawables) {
+        ctx.drawImage(
+          item.image,
+          offsetX + item.offset[0] * scale,
+          offsetY + item.offset[1] * scale,
+          item.width * scale,
+          item.height * scale,
+        )
+      }
+    } else {
+      for (const patch of patches) {
+        ctx.drawImage(
+          patch.image,
+          offsetX + patch.offset[0] * scale,
+          offsetY + patch.offset[1] * scale,
+          patch.width * scale,
+          patch.height * scale,
+        )
+      }
     }
     ctx.restore()
 
@@ -328,7 +367,7 @@ export function Stage({
       ctx.lineTo(cx, cy + dy * corner)
       ctx.stroke()
     }
-  }, [audioStart, bpm, checker, defaultState, imagesReady, manifest, pan, size, state, sway, time, zoom])
+  }, [audioStart, bpm, checker, defaultState, hiddenLayers, imagesReady, manifest, pan, size, state, sway, time, zoom])
 
   useEffect(() => {
     draw()
@@ -351,6 +390,11 @@ export function Stage({
     <div className="stage">
       <div className="stage-head">
         <span className="stage-title">预览</span>
+        {stale ? (
+          <span className="stage-stale" title="图层可见性或映射已修改，重新烘焙后预览才会更新">
+            贴图待更新
+          </span>
+        ) : null}
         <div className="stage-toolbar">
           <button className="icon-btn" title="缩小" onClick={() => zoomTo(zoom - 0.1)}>
             <IconZoomOut />

@@ -80,6 +80,8 @@ class RenderRequest(BaseModel):
     brow: str | None = None
     cheek: str | None = None
     sway: SwayIn | None = None
+    # Static (non-semantic) layers hidden by the user in the layer tree.
+    hiddenLayers: list[str] = Field(default_factory=list, max_length=10_000)
 
 
 class RenderJobInfo(BaseModel):

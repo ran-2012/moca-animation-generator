@@ -229,6 +229,7 @@ function normalizeManifest(input: BakeManifest | null, assetId: string): BakeMan
     height: asNumber(input.height),
     base: { url: String(input.base?.url ?? '') },
     patches: input.patches && typeof input.patches === 'object' ? input.patches : {},
+    layers: input.layers && typeof input.layers === 'object' ? input.layers : undefined,
     zorder: Array.isArray(input.zorder) && input.zorder.length > 0 ? input.zorder.map(String) : ['cheek', 'mouth', 'eyes', 'brow'],
     profileVersion: String(input.profileVersion ?? ''),
     bakedAt: String(input.bakedAt ?? ''),

@@ -498,6 +498,15 @@ body[data-resizing] .split-handle::after {
   white-space: nowrap;
 }
 
+.stage-stale {
+  padding: 1px 6px;
+  border: 1px solid #6b5a34;
+  border-radius: 2px;
+  color: #d7ba7d;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
 .stage-toolbar {
   position: static;
   margin-left: auto;
@@ -803,6 +812,47 @@ body[data-resizing] .split-handle::after {
 
 .layer-eye.off {
   color: #f48771;
+}
+
+.layer-row.frozen {
+  color: #8f8f8f;
+}
+
+.layer-row.frozen .layer-name {
+  color: #a0a0a0;
+}
+
+.layer-lock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  flex: none;
+  color: #7a7a7a;
+}
+
+.layer-exclusive {
+  flex: none;
+  height: 17px;
+  padding: 0 5px;
+  border: 1px solid #454545;
+  border-radius: 2px;
+  background: transparent;
+  color: #8a8a8a;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.layer-exclusive:hover {
+  color: #d0d0d0;
+  background: #383838;
+}
+
+.layer-exclusive.on {
+  border-color: #007acc;
+  color: #9cdcfe;
+  background: rgba(0, 122, 204, 0.16);
 }
 
 .layer-tree-foot {
@@ -1148,16 +1198,24 @@ body[data-resizing] .split-handle::after {
   gap: 4px;
 }
 
-.multi-timeline {
-  background: #1e1e1e;
+.density-switch {
+  margin-left: 4px;
 }
 
-.multi-timeline-tools {
-  height: 26px;
-  flex-basis: 26px;
-  border-bottom: 1px solid #313131;
+.timeline-mode {
   color: #8a8a8a;
-  font-size: 9.5px;
+  font: 9.5px var(--mono);
+  white-space: nowrap;
+}
+
+.density-switch button {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 10.5px;
+}
+
+.multi-timeline {
+  background: #1e1e1e;
 }
 
 .segmented {

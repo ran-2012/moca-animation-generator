@@ -18,6 +18,7 @@ interface MappingPanelProps {
   saving: boolean
   busyAutomap: boolean
   bake: BakeUiState
+  stale: boolean
   onAutomap: () => void
   onSave: () => void
   onBake: () => void
@@ -153,6 +154,7 @@ export function MappingPanel({
   saving,
   busyAutomap,
   bake,
+  stale,
   onAutomap,
   onSave,
   onBake,
@@ -306,9 +308,16 @@ export function MappingPanel({
               title="POST /api/psd/{assetId}/bake，同步执行约 10–30s"
             >
               {bake.status === 'loading' ? <IconSpinner size={14} /> : <IconBake size={14} />}
-              {bake.status === 'loading' ? '烘焙中…' : '烘焙'}
+              {bake.status === 'loading' ? '烘焙中…' : stale ? '重新烘焙' : '烘焙'}
             </button>
           </div>
+
+          {stale && bake.status !== 'loading' ? (
+            <div className="inline-hint">
+              <IconAlert size={13} />
+              <span>贴图待更新 · 重新烘焙后预览与导出才会使用新的图层可见性和映射</span>
+            </div>
+          ) : null}
 
           {bake.status === 'loading' ? (
             <div className="bake-progress">
@@ -331,10 +340,10 @@ export function MappingPanel({
             </div>
           ) : null}
 
-          {bake.status === 'done' && dirty ? (
+          {bake.status === 'done' && dirty && !stale ? (
             <div className="inline-hint">
               <IconAlert size={13} />
-              <span>映射已修改 · 重新烘焙后舞台才会更新</span>
+              <span>图层显示已调整并即时生效 · 保存映射可记住当前可见性</span>
             </div>
           ) : null}
 

@@ -54,6 +54,7 @@ _ASSET_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
 _CANVAS_PAD = 0
 
 # Channels and their priority order (bottom -> top) used when no profile says otherwise.
+MANIFEST_VERSION = 4
 DEFAULT_ZORDER = ["cheek", "mouth", "eyes", "brow", "eyeEffect", "sweat"]
 DEFAULT_STATE = {
     "mouth": "closed", "eyes": "open", "brow": "neutral", "cheek": "normal",
@@ -1010,6 +1011,13 @@ def _manifest_files_ok(manifest: dict[str, Any]) -> bool:
         path = _media_path(url) if url else None
         if path is None or not path.is_file():
             return False
+    for layer in (manifest.get("layers") or {}).values():
+        if not isinstance(layer, dict):
+            return False
+        url = layer.get("url")
+        path = _media_path(url) if url else None
+        if path is None or not path.is_file():
+            return False
     return True
 
 
@@ -1059,12 +1067,86 @@ def _restore_visibility(layers: list[Any]) -> None:
             pass
 
 
+def _flatten_pixel_layers(psd: Any) -> list[tuple[Any, str, bool]]:
+    """Leaf layers in paint order with their tree paths and effective visibility."""
+    leaves: list[tuple[Any, str, bool]] = []
+
+    def walk(node: Any, prefix: str, parent_visible: bool) -> None:
+        for index, child in enumerate(node):
+            path = f"{prefix}.{index}" if prefix else str(index)
+            visible = parent_visible and bool(getattr(child, "visible", True))
+            if child.is_group():
+                walk(child, path, visible)
+            else:
+                leaves.append((child, path, visible))
+
+    walk(psd, "", True)
+    return leaves
+
+
+def _dynamic_layer_ids(profile: dict[str, Any]) -> set[str]:
+    """Layer ids driven by semantic channels (frozen in the layer tree)."""
+    ids: set[str] = set()
+    channel_sets: list[dict[str, Any]] = [profile.get("channels") or {}]
+    for mapping in (profile.get("mappingSets") or {}).values():
+        if isinstance(mapping, dict):
+            channel_sets.append(mapping.get("channels") or {})
+    for channels in channel_sets:
+        for states in channels.values():
+            if not isinstance(states, dict):
+                continue
+            ids.update(str(layer) for layer in states.values() if layer)
+    return ids
+
+
+def _bake_static_layers(
+    leaves: list[tuple[Any, str, bool]],
+    dynamic_ids: set[str],
+    cache_dir: Path,
+    warnings: list[str],
+) -> tuple[dict[str, dict[str, Any]], list[Any], dict[str, int]]:
+    """Rasterize non-dynamic layers so the UI can toggle them after baking."""
+    layers: dict[str, dict[str, Any]] = {}
+    touched: list[Any] = []
+    z_by_id: dict[str, int] = {}
+    for index, (layer, path, visible) in enumerate(leaves):
+        layer_id = _layer_id(layer)
+        if layer_id is None:
+            continue
+        z_by_id[layer_id] = index
+        if layer_id not in dynamic_ids:
+            image, offset = _rasterize_layer(layer)
+            if image is None or image.width <= 0 or image.height <= 0:
+                warnings.append(f"图层无法栅格化，保留在基准图：{layer.name}")
+                continue
+            safe_id = re.sub(r"[^0-9A-Za-z_-]", "_", layer_id)[:40]
+            target = cache_dir / f"layer_{index:03d}_{safe_id}.png"
+            image.save(target, format="PNG", compress_level=3)
+            layers[layer_id] = {
+                "url": storage.media_url(target),
+                "offset": [int(offset[0]), int(offset[1])],
+                "width": int(image.width),
+                "height": int(image.height),
+                "z": index,
+                "name": str(layer.name or ""),
+                "path": path,
+                "group": path.rsplit(".", 1)[0] if "." in path else "",
+                "visible": bool(visible),
+            }
+        if getattr(layer, "visible", False):
+            layer.visible = False
+            touched.append(layer)
+    return layers, touched, z_by_id
+
+
 def _bake_patches(
     psd: Any,
     profile: dict[str, Any],
     cache_dir: Path,
     warnings: list[str],
+    z_by_id: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    z_map = z_by_id or {}
     patches: dict[str, dict[str, Any]] = {}
     for channel in profile["zorder"]:
         mapping = profile["channels"].get(channel) or {}
@@ -1085,17 +1167,19 @@ def _bake_patches(
                 "offset": [int(offset[0]), int(offset[1])],
                 "width": int(image.width),
                 "height": int(image.height),
+                "z": int(z_map.get(str(layer_id), 0)),
             }
     return patches
 
 
 def _clean_cache(cache_dir: Path, keep: set[str]) -> None:
-    for path in cache_dir.glob("patch_*.png"):
-        if path.name not in keep:
-            try:
-                path.unlink()
-            except OSError:  # pragma: no cover - best effort
-                pass
+    for pattern in ("patch_*.png", "layer_*.png"):
+        for path in cache_dir.glob(pattern):
+            if path.name not in keep:
+                try:
+                    path.unlink()
+                except OSError:  # pragma: no cover - best effort
+                    pass
 
 
 def bake(asset_id: str, profile: Any = None) -> dict[str, Any]:
@@ -1115,7 +1199,12 @@ def bake(asset_id: str, profile: Any = None) -> dict[str, Any]:
     manifest_path = cache_dir / "manifest.json"
 
     cached = storage.read_json(manifest_path)
-    if isinstance(cached, dict) and cached.get("profileVersion") == profile_hash and _manifest_files_ok(cached):
+    if (
+        isinstance(cached, dict)
+        and cached.get("profileVersion") == profile_hash
+        and cached.get("version") == MANIFEST_VERSION
+        and _manifest_files_ok(cached)
+    ):
         result = dict(cached)
         result["cached"] = True
         return result
@@ -1124,13 +1213,20 @@ def bake(asset_id: str, profile: Any = None) -> dict[str, Any]:
     warnings: list[str] = []
     psd = _open_psd(asset_id)
     with _asset_lock(asset_id):
+        leaves = _flatten_pixel_layers(psd)
+        z_by_id = {_layer_id(layer): index for index, (layer, _, _) in enumerate(leaves)
+                   if _layer_id(layer)}
+        dynamic_ids = _dynamic_layer_ids(profile)
         t0 = time.perf_counter()
-        patches = _bake_patches(psd, profile, cache_dir, warnings)
+        patches = _bake_patches(psd, profile, cache_dir, warnings, z_by_id)
         patches_seconds = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        layers, static_touched, _ = _bake_static_layers(leaves, dynamic_ids, cache_dir, warnings)
+        layers_seconds = time.perf_counter() - t0
 
-        touched: list[Any] = []
+        touched: list[Any] = list(static_touched)
         try:
-            touched = _hide_for_base(psd, profile, warnings)
+            touched.extend(_hide_for_base(psd, profile, warnings))
             t0 = time.perf_counter()
             base = psd.composite(ignore_preview=True).convert("RGBA")
             base_seconds = time.perf_counter() - t0
@@ -1144,11 +1240,13 @@ def bake(asset_id: str, profile: Any = None) -> dict[str, Any]:
 
     elapsed = time.perf_counter() - started
     manifest: dict[str, Any] = {
+        "version": MANIFEST_VERSION,
         "assetId": asset_id,
         "width": int(psd.width),
         "height": int(psd.height),
         "base": {"url": storage.media_url(base_path)},
         "patches": patches,
+        "layers": layers,
         "zorder": list(profile["zorder"]),
         "profileVersion": profile_hash,
         "bakedAt": _iso_now(),
@@ -1159,13 +1257,18 @@ def bake(asset_id: str, profile: Any = None) -> dict[str, Any]:
         "warnings": warnings,
         "timings": {
             "patches": round(patches_seconds, 3),
+            "layers": round(layers_seconds, 3),
             "baseComposite": round(base_seconds, 3),
             "baseSave": round(save_seconds, 3),
             "total": round(elapsed, 3),
         },
     }
     storage.write_json(manifest_path, manifest)
-    keep = {Path(patch["url"]).name for patch in patches.values()} | {"base.png", "manifest.json"}
+    keep = (
+        {Path(patch["url"]).name for patch in patches.values()}
+        | {Path(layer["url"]).name for layer in layers.values()}
+        | {"base.png", "manifest.json"}
+    )
     _clean_cache(cache_dir, keep)
     result = dict(manifest)
     result["cached"] = False
@@ -1185,17 +1288,33 @@ def _overlay_defaults(
     base: Image.Image,
     profile: dict[str, Any],
     patch_images: dict[str, tuple[Image.Image, tuple[int, int]]],
+    layer_images: dict[str, tuple[Image.Image, tuple[int, int], int, str]] | None = None,
+    patches_meta: dict[str, Any] | None = None,
 ) -> Image.Image:
     composed = base.copy()
+    hidden_groups = [str(path) for path in (profile["base"].get("hiddenGroups") or [])]
+    hidden_layers = {str(item) for item in (profile["base"].get("hiddenLayers") or [])}
+    drawables: list[tuple[int, Image.Image, tuple[int, int]]] = []
+    for layer_id, (image, offset, z, path) in (layer_images or {}).items():
+        if layer_id in hidden_layers:
+            continue
+        if any(path == group or path.startswith(group + ".") for group in hidden_groups):
+            continue
+        drawables.append((z, image, offset))
     defaults = profile["base"].get("defaultState") or {}
+    meta = patches_meta or {}
     for channel in profile["zorder"]:
         state = defaults.get(channel)
         if not state:
             continue
-        entry = patch_images.get(f"{channel}.{state}")
+        key = f"{channel}.{state}"
+        entry = patch_images.get(key)
         if entry is None:
             continue
-        image, offset = entry
+        z = int((meta.get(key) or {}).get("z") or 10**6)
+        drawables.append((z, entry[0], entry[1]))
+    drawables.sort(key=lambda item: item[0])
+    for _, image, offset in drawables:
         _alpha_paste(composed, image, int(offset[0]), int(offset[1]))
     return composed
 
@@ -1235,6 +1354,8 @@ def preview_png(asset_id: str, width: int = 900) -> bytes:
     manifest = storage.read_json(_manifest_path(asset_id))
     base_image: Image.Image | None = None
     patch_images: dict[str, tuple[Image.Image, tuple[int, int]]] = {}
+    layer_images: dict[str, tuple[Image.Image, tuple[int, int], int, str]] = {}
+    patches_meta: dict[str, Any] = {}
 
     if (
         isinstance(manifest, dict)
@@ -1249,6 +1370,19 @@ def preview_png(asset_id: str, width: int = 900) -> bytes:
             path = _media_path(patch.get("url"))
             if path is not None and path.is_file():
                 patch_images[key] = (_load_rgba(path), _offset(patch.get("offset")))
+        patches_meta = manifest.get("patches") or {}
+        for layer_id, layer in (manifest.get("layers") or {}).items():
+            layer = layer or {}
+            if layer.get("visible") is False:
+                continue
+            path = _media_path(layer.get("url"))
+            if path is not None and path.is_file():
+                layer_images[str(layer_id)] = (
+                    _load_rgba(path),
+                    _offset(layer.get("offset")),
+                    int(layer.get("z") or 0),
+                    str(layer.get("path") or ""),
+                )
     elif (
         isinstance(manifest, dict)
         and manifest.get("hiddenGroups") == list(profile["base"].get("hiddenGroups") or [])
@@ -1272,7 +1406,7 @@ def preview_png(asset_id: str, width: int = 900) -> bytes:
         else:
             patch_images = _rasterize_default_patches(psd, profile)
 
-    composed = _overlay_defaults(base_image, profile, patch_images)
+    composed = _overlay_defaults(base_image, profile, patch_images, layer_images, patches_meta)
     if composed.width > width:
         target_width = width
         target_height = max(1, round(composed.height * (width / composed.width)))

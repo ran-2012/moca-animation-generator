@@ -41,10 +41,10 @@ import time
 import uuid
 import zipfile
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from PIL import Image, ImageColor
 
@@ -211,6 +211,8 @@ class PreparedAssets:
     source_width: int
     source_height: int
     baked_at: str = ""
+    layers: dict[str, tuple[Image.Image, tuple[int, int], int]] = field(default_factory=dict)
+    patch_z: dict[str, int] = field(default_factory=dict)
 
 
 def _channel_states(patches: Mapping[str, Any], channel: str) -> set[str]:
@@ -237,6 +239,7 @@ def prepare_assets(psd_asset_id: str, out_width: int) -> PreparedAssets:
         base = base.resize((width, height), Image.Resampling.LANCZOS)
 
     patches: dict[str, tuple[Image.Image, tuple[int, int]]] = {}
+    patch_z: dict[str, int] = {}
     for key, patch in manifest["patches"].items():
         path = _require_media(patch.get("url"), f"补丁 {key}")
         try:
@@ -255,6 +258,36 @@ def prepare_assets(psd_asset_id: str, out_width: int) -> PreparedAssets:
         except (TypeError, ValueError, IndexError):
             offset_x = offset_y = 0
         patches[key] = (layer, (offset_x, offset_y))
+        try:
+            patch_z[key] = int(patch.get("z") or 0)
+        except (TypeError, ValueError):
+            patch_z[key] = 0
+
+    layers: dict[str, tuple[Image.Image, tuple[int, int], int]] = {}
+    for layer_id, entry in (manifest.get("layers") or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        path = _require_media(entry.get("url"), f"静态图层 {layer_id}")
+        try:
+            with Image.open(path) as image:
+                layer = image.convert("RGBA")
+        except OSError as exc:  # pragma: no cover - corrupt cache
+            raise RenderError(404, f"静态图层 {layer_id} 无法读取：{exc}") from exc
+        layer_width = max(1, round(layer.width * scale_x))
+        layer_height = max(1, round(layer.height * scale_y))
+        if layer.size != (layer_width, layer_height):
+            layer = layer.resize((layer_width, layer_height), Image.Resampling.LANCZOS)
+        offset = entry.get("offset") or [0, 0]
+        try:
+            offset_x = int(round(float(offset[0]) * scale_x))
+            offset_y = int(round(float(offset[1]) * scale_y))
+        except (TypeError, ValueError, IndexError):
+            offset_x = offset_y = 0
+        try:
+            z = int(entry.get("z") or 0)
+        except (TypeError, ValueError):
+            z = 0
+        layers[str(layer_id)] = (layer, (offset_x, offset_y), z)
 
     manifest_zorder = [str(channel) for channel in (manifest.get("zorder") or [])] or list(DEFAULT_ZORDER)
     zorder: list[str] = []
@@ -296,6 +329,8 @@ def prepare_assets(psd_asset_id: str, out_width: int) -> PreparedAssets:
         source_width=source_width,
         source_height=source_height,
         baked_at=str(manifest.get("bakedAt") or ""),
+        layers=layers,
+        patch_z=patch_z,
     )
 
 
@@ -341,7 +376,8 @@ class FrameSource:
 
     def __init__(self, timeline: Mapping[str, Any] | None, blinks: list[Any],
                  assets: PreparedAssets, brow: str | None = None,
-                 cheek: str | None = None, sway: Mapping[str, Any] | None = None) -> None:
+                 cheek: str | None = None, sway: Mapping[str, Any] | None = None,
+                 hidden_layers: Iterable[str] | None = None) -> None:
         frames: list[tuple[float, str, str | None]] = []
         for item in (timeline or {}).get("frames") or []:
             if isinstance(item, Mapping):
@@ -387,6 +423,7 @@ class FrameSource:
                         for channel in assets.zorder}
         self.brow = brow
         self.cheek = cheek
+        self._hidden_layers = {str(item) for item in (hidden_layers or [])}
         sway = sway or {}
         self.sway_enabled = bool(sway.get("enabled")) and float(sway.get("bpm") or 0) > 0
         self.sway_amplitude = max(0.0, min(1.0, float(sway.get("amplitude") or 0.0)))
@@ -459,6 +496,12 @@ class FrameSource:
     # -- composition ---------------------------------------------------
     def compose_state(self, state: Mapping[str, str]) -> Image.Image:
         frame = self.assets.base.copy()
+        drawables: list[tuple[int, Image.Image, tuple[int, int]]] = []
+        for layer_id, entry in self.assets.layers.items():
+            if layer_id in self._hidden_layers:
+                continue
+            image, position, z = entry
+            drawables.append((z, image, position))
         for channel in self.assets.zorder:
             key = state.get(channel)
             if not key:
@@ -467,6 +510,9 @@ class FrameSource:
             if patch is None:
                 continue
             layer, position = patch
+            drawables.append((self.assets.patch_z.get(key, 10**6), layer, position))
+        drawables.sort(key=lambda item: item[0])
+        for _, layer, position in drawables:
             _alpha_paste(frame, layer, position)
         return frame
 
@@ -937,6 +983,7 @@ def _run_job(job_id: str) -> None:
             brow=params.get("brow"),
             cheek=params.get("cheek"),
             sway=params.get("sway"),
+            hidden_layers=params.get("hiddenLayers") or [],
         )
         if job["format"] == "png_zip":
             _render_png_zip(job_id, source, float(params["startSec"]),
@@ -1064,6 +1111,7 @@ def submit(req: RenderRequest) -> RenderJobInfo:
             "brow": req.brow,
             "cheek": req.cheek,
             "sway": req.sway.model_dump() if req.sway else None,
+            "hiddenLayers": list(req.hiddenLayers),
         },
         "_assets": assets,
         "_lastPersist": time.monotonic(),

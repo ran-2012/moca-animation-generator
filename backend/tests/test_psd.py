@@ -349,11 +349,29 @@ def test_bake_creates_base_and_patches() -> None:
     assert set(manifest["patches"]) == expected_keys
 
     base_file = _media_file(manifest["base"]["url"])
-    assert base_file.is_file() and base_file.stat().st_size > 10000
+    assert base_file.is_file() and base_file.stat().st_size > 0
     with Image.open(base_file) as base:
         assert base.mode == "RGBA" and base.size == (2480, 3500)
-        # The character is a cut-out: transparent background, opaque body.
-        assert base.getchannel("A").getextrema() == (0, 255)
+        # v2 bakes every pixel layer separately, so the base is a blank canvas
+        # and the stage composes layers + patches by z order.
+        assert base.getchannel("A").getextrema() == (0, 0)
+
+    assert manifest["version"] == psd_service.MANIFEST_VERSION
+    layers = manifest["layers"]
+    assert len(layers) >= 5
+    profile = psd_service.automap(asset_id)["profile"]
+    dynamic_ids = {
+        layer_id
+        for states in profile["channels"].values()
+        for layer_id in states.values()
+        if layer_id
+    }
+    for layer_id, layer in layers.items():
+        assert layer_id not in dynamic_ids
+        assert isinstance(layer["z"], int)
+        assert layer["path"]
+        assert isinstance(layer["visible"], bool)
+        assert _media_file(layer["url"]).is_file()
 
     mouth_a = manifest["patches"]["mouth.a"]
     assert mouth_a["offset"] == [1171, 727]

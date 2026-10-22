@@ -479,6 +479,11 @@ try {
     })
     document.querySelector('.multi-timeline-viewport').dispatchEvent(ctrlWheel)
     assert(ctrlWheel.defaultPrevented, 'Ctrl+滚轮由时间轴接管，不触发页面缩放')
+    const densityGroup = document.querySelector('.timeline-head-actions .segmented')
+    assert(densityGroup?.textContent.includes('紧凑'), '轨道高度与全览同排')
+    densityGroup.querySelectorAll('button')[2].click()
+    await sleep(120)
+    assert(densityGroup.querySelectorAll('button')[2].classList.contains('active'), '轨道高度切换生效')
 
     step('导入音频 → 波形 / BPM')
     setFile('input[accept*="audio"]', makeFile('流沙.wav', 'audio/wav'))
@@ -510,6 +515,51 @@ try {
     document.querySelector('.play-btn').click()
 
     await runExportFlow({ label: 'Mock', durationSeconds: 1, expectMock: true })
+
+    step('图层可见性 → 即切即显 / 冻结与互斥')
+    const frozenRow = document.querySelector('.layer-row.frozen')
+    assert(frozenRow && frozenRow.querySelector('.layer-lock') && !frozenRow.querySelector('.layer-eye'), '自动驱动图层在树中冻结')
+    const rowCount = document.querySelectorAll('.layer-row').length
+    document.querySelector('.layer-row:not(.frozen) .layer-eye').click()
+    await sleep(150)
+    assert(document.querySelector('.stage-hud'), '切换静态图层后预览仍在')
+    assert(!document.querySelector('.stage-stale'), '静态图层切换不再需要重新烘焙')
+    assert(document.querySelectorAll('.layer-row').length === rowCount, '切换可见性不折叠图层树')
+
+    const groupRow = [...document.querySelectorAll('.layer-row')].find((row) => row.querySelector('.layer-exclusive'))
+    assert(Boolean(groupRow), '组内互斥开关可用')
+    const exclusive = groupRow.querySelector('.layer-exclusive')
+    exclusive.click()
+    await sleep(80)
+    assert(exclusive.classList.contains('on'), '组内互斥已开启')
+    const wrapper = groupRow.parentElement
+    const childRows = [...wrapper.children]
+      .slice(1)
+      .map((child) => child.querySelector(':scope > .layer-row'))
+      .filter((row) => row && row.querySelector('.layer-eye'))
+    assert(childRows.length >= 2, '互斥组内至少有两个可切换图层')
+    const [first, second] = childRows
+    if (!second.querySelector('.layer-eye').classList.contains('off')) {
+      second.querySelector('.layer-eye').click()
+      await sleep(80)
+    }
+    second.querySelector('.layer-eye').click()
+    await sleep(120)
+    assert(first.querySelector('.layer-eye').classList.contains('off'), '互斥显示时自动隐藏同组其它图层')
+
+    step('映射修改 → 贴图待更新并拦截导出')
+    const defaultSelect = document.querySelector('.default-grid .select')
+    const alternative = defaultSelect ? [...defaultSelect.options].find((option) => option.value !== defaultSelect.value) : null
+    assert(Boolean(alternative), '默认状态可选值存在')
+    defaultSelect.value = alternative.value
+    defaultSelect.dispatchEvent(new window.Event('change', { bubbles: true }))
+    await waitFor('贴图待更新标记', () => Boolean(document.querySelector('.stage-stale')))
+    assert(Boolean(document.querySelector('.stage-hud')), '映射修改后预览仍在')
+    clickButton('导出')
+    await waitFor('过期导出拦截', () => (document.querySelector('.export-problems')?.textContent ?? '').includes('过期'))
+    assert(true, '贴图过期时禁止导出')
+    document.querySelector('.modal-head .icon-btn').click()
+    await waitFor('导出面板关闭', () => !document.querySelector('.modal-overlay.open'))
 
     step('Mock / 真实后端一键切换')
     document.querySelector('.mock-switch').click()

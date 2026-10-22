@@ -131,22 +131,30 @@ moca-diff/
 
 ```json
 {
+  "version": 4,
   "assetId": "a1b2c3d4e5f6",
   "width": 2480, "height": 3500,
   "base": { "url": "/media/psd/a1b2c3d4e5f6/cache/base.png" },
   "patches": {
-    "mouth.a": { "url": "/media/psd/.../cache/patch_mouth_a.png", "offset": [1171, 727], "width": 153, "height": 132 },
+    "mouth.a": { "url": "/media/psd/.../cache/patch_mouth_a.png", "offset": [1171, 727], "width": 153, "height": 132, "z": 42 },
     "mouth.closed": { ... },
     "eyes.open": { ... },
     "eyes.blink": { ... },
     "brow.neutral": { ... },
     "cheek.normal": { ... }
   },
+  "layers": {
+    "15": { "url": "/media/psd/.../cache/layer_003_15.png", "offset": [210, 180], "width": 1741, "height": 1848, "z": 3, "name": "上着", "path": "0.2.2", "group": "0.2", "visible": false }
+  },
   "zorder": ["cheek", "mouth", "eyes", "brow"],
   "profileVersion": "sha1...",
   "bakedAt": "ISO8601"
 }
 ```
+
+- `layers` 为**非语义驱动**的静态图层，每层单独出图；`z` 与 `patches[].z` 同为 PSD 绘制顺序（自底向上），前端与导出把它们合并排序后绘制。
+- `visible` 记录 PSD 原始有效可见性；前端首次烘焙后把 `false` 的图层加入初始隐藏集合，用户可在图层树中随时开启/关闭，**无需重新烘焙**。
+- `base` 保留透明画布以兼容旧清单；v1 清单没有 `layers` 时前端/后端回退到 base + patches 的旧合成路径。
 
 ### 4.4 时间轴
 
@@ -289,7 +297,8 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
   "format": "png_zip",           // png_zip | prores4444 | webm_alpha | mp4
   "background": "#101010",       // 仅 mp4
   "brow": "neutral", "cheek": "normal",
-  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0, "bpm": 76.0, "audioStart": 0.0}
+  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0, "bpm": 76.0, "audioStart": 0.0},
+  "hiddenLayers": ["15", "25"]
 }
 ```
 
@@ -299,6 +308,7 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
 - 后台线程渲染，同一时间 1 个任务；`GET` 轮询进度。
 - 导出按 `mouthPose → viseme → defaultState` 选择口型，并按时间采样动画轨。叠加通道状态为 `off` 时不绘制。
 - `sway` 为可选节奏变换：`amplitude` 为 `0..1` 强度（最大约 4° 左右倾角、2% 纵向拉伸），`frequency` 为每拍循环次数，`offset` 为节拍偏移，`bpm` 与 `audioStart` 用于预览、时间轴和导出采用同一相位公式。启用后围绕立绘底部中心变换，透明画布尺寸不变。
+- `hiddenLayers` 为静态图层 id 列表，导出会剔除这些图层；与预览中的图层显隐保持同一份状态。
 
 ### 5.7 音频 BPM 说明（补充）
 
@@ -324,14 +334,17 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
   "version": 1, "projectName": "未命名项目", "mockMode": false, "time": 27.6,
   "psd": {"assetId": "...", "filename": "moca.psd", "width": 2480, "height": 3500, "...": "..."},
   "profile": {"...MappingProfile...": "..."},
-  "hiddenGroups": ["0.3.1"], "hiddenLayers": [], "selectedLayerId": "63",
+  "hiddenGroups": ["0.3.1"], "hiddenLayers": [], "exclusiveGroups": ["0.2"], "selectedLayerId": "63",
   "svp": {"assetId": "...", "tracks": ["..."]}, "selectedTrack": 5, "fps": 60,
   "mappingSetId": "standard", "animationModeId": "natural",
   "timelineView": {"start": 0.25, "span": 0.5},
   "audio": {"assetId": "...", "durationSec": 242.6}, "bpm": 76.0, "offset": 0.0,
-  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0}
+  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0},
+  "manifestStale": false
 }
 ```
+
+`manifestStale` 表示当前烘焙贴图已落后于图层可见性/映射，前端保留旧预览但禁止导出，重新烘焙后清除。
 
 恢复流程：读取 session → 用 `psd.assetId` 重新拉 tree/manifest → 用 `svp.assetId + selectedTrack + fps` 重新生成（命中磁盘缓存）时间轴/眨眼 → 用 `audio.assetId` 重新拉 peaks → 恢复时间/BPM/偏移。因此不把 1.7MB 时间轴和图层树塞进 session 文件。
 

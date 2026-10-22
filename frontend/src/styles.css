@@ -235,18 +235,6 @@ body[data-resizing='timeline'] {
   background: #0b0e15;
 }
 
-.multi-timeline-tools {
-  height: 30px;
-  flex: 0 0 30px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--line);
-  color: var(--text-muted);
-  font: 9px var(--mono);
-}
-
 .segmented {
   display: inline-flex;
   border: 1px solid var(--line);

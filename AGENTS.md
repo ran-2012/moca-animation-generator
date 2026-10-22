@@ -121,7 +121,8 @@ moca-diff/
 
 ### PSD
 
-- 烘焙流程：PSD 合成一次 → `base.png` + 每个 slot 的 patch PNG；之后前端合成只做 `drawImage`，**禁止每帧调用 psd-tools composite**。
+- 烘焙流程：PSD 合成一次 → `base.png` + 每个 slot 的 patch PNG + 每个非语义图层单独 `layer_*.png`；前端按 `z` 合成 base / 静态图层 / 补丁，**禁止每帧调用 psd-tools composite**。
+- 静态图层（未映射到语义通道）可在烘焙后即时显隐，不触发重新烘焙；映射到通道的图层在图层树中冻结。清单 `version` 变更时需要重新烘焙。
 - `psd.composite()` 必须带 `ignore_preview=True`，否则拿到的是预览图。
 - `psd-tools` 的 layer bbox 顺序是 `(left, top, right, bottom)`，与原始 PSD 字段顺序不同。
 - 自动映射结果是 `MappingProfile`；moca.psd 的默认槽位见 README。

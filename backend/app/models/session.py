@@ -32,6 +32,7 @@ class SessionState(BaseModel):
     profile: dict[str, Any] | None = None
     hiddenGroups: list[str] = Field(default_factory=list)
     hiddenLayers: list[str] = Field(default_factory=list)
+    exclusiveGroups: list[str] = Field(default_factory=list)
     selectedLayerId: str | None = None
 
     svp: dict[str, Any] | None = None
@@ -45,6 +46,7 @@ class SessionState(BaseModel):
     bpm: float | None = None
     offset: float = 0.0
     sway: SessionSway | None = None
+    manifestStale: bool = False
 
     updatedAt: str | None = None
 

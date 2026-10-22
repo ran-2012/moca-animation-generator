@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { LayerNode } from '../types'
-import { IconChevronDown, IconChevronRight, IconEye, IconEyeOff, IconLayers } from './Icons'
+import { IconChevronDown, IconChevronRight, IconEye, IconEyeOff, IconLayers, IconLock } from './Icons'
 
 interface LayerTreeProps {
   root: LayerNode | null
@@ -9,10 +9,12 @@ interface LayerTreeProps {
   mappedIds: Set<string>
   hiddenGroups: Set<string>
   hiddenLayers: Set<string>
+  exclusiveGroups: Set<string>
   selectedId: string | null
   onSelect: (node: LayerNode) => void
   onToggleGroup: (path: string) => void
   onToggleLayer: (id: string) => void
+  onToggleExclusive: (path: string) => void
 }
 
 function countPixels(node: LayerNode): number {
@@ -33,34 +35,43 @@ export function LayerTree({
   mappedIds,
   hiddenGroups,
   hiddenLayers,
+  exclusiveGroups,
   selectedId,
   onSelect,
   onToggleGroup,
   onToggleLayer,
+  onToggleExclusive,
 }: LayerTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  const rootRef = useRef<LayerNode | null>(null)
 
-  // expand the group folders that contain mapped layers by default
+  // Expand mapped folders without collapsing what the user already opened;
+  // resetting the set here used to make the tree (and its scrollbar) jump.
   useEffect(() => {
     if (!root) {
+      rootRef.current = null
       setExpanded(new Set())
       return
     }
-    const next = new Set<string>()
-    next.add(root.id)
-    const visit = (node: LayerNode, ancestors: string[]): void => {
-      if (mappedIds.has(node.id)) {
-        for (const id of ancestors) next.add(id)
-        if (node.kind === 'group') next.add(node.id)
+    const isNewTree = rootRef.current !== root
+    rootRef.current = root
+    setExpanded((current) => {
+      const next = isNewTree ? new Set<string>() : new Set(current)
+      next.add(root.id)
+      const visit = (node: LayerNode, ancestors: string[]): void => {
+        if (mappedIds.has(node.id)) {
+          for (const id of ancestors) next.add(id)
+          if (node.kind === 'group') next.add(node.id)
+        }
+        for (const child of node.children) visit(child, [...ancestors, node.id])
       }
-      for (const child of node.children) visit(child, [...ancestors, node.id])
-    }
-    visit(root, [])
-    for (const child of root.children) {
-      if (child.kind === 'group') next.add(child.id)
-    }
-    setExpanded(next)
+      visit(root, [])
+      for (const child of root.children) {
+        if (child.kind === 'group') next.add(child.id)
+      }
+      return next
+    })
   }, [root, mappedIds])
 
   const allGroupIds = useMemo(() => {
@@ -84,12 +95,14 @@ export function LayerTree({
     const isOpen = query.trim() ? true : expanded.has(node.id)
     const hidden = isGroup ? hiddenGroups.has(node.path) : hiddenLayers.has(node.id)
     const mapped = mappedIds.has(node.id)
+    const frozen = !isGroup && mapped
+    const exclusive = isGroup && exclusiveGroups.has(node.path)
     const selected = selectedId === node.id
     const thumb = isGroup ? null : thumbFor(node)
     return (
       <div key={node.id}>
         <div
-          className={`layer-row ${selected ? 'selected' : ''} ${hidden ? 'is-hidden' : ''}`}
+          className={`layer-row ${selected ? 'selected' : ''} ${hidden ? 'is-hidden' : ''} ${frozen ? 'frozen' : ''}`}
           style={{ paddingLeft: 4 + depth * 14 }}
           onClick={() => {
             if (isGroup) {
@@ -121,17 +134,35 @@ export function LayerTree({
               {node.width}×{node.height}
             </span>
           ) : null}
-          <button
-            className={`layer-eye ${hidden ? 'off' : ''}`}
-            title={hidden ? '在烘焙基准图中显示该图层/组' : '从烘焙基准图中隐藏该图层/组'}
-            onClick={(event) => {
-              event.stopPropagation()
-              if (isGroup) onToggleGroup(node.path)
-              else onToggleLayer(node.id)
-            }}
-          >
-            {hidden ? <IconEyeOff size={12} /> : <IconEye size={12} />}
-          </button>
+          {isGroup && !frozen && countPixels(node) > 1 ? (
+            <button
+              className={`layer-exclusive ${exclusive ? 'on' : ''}`}
+              title="组内互斥：显示一个图层时自动隐藏同组其它图层"
+              onClick={(event) => {
+                event.stopPropagation()
+                onToggleExclusive(node.path)
+              }}
+            >
+              互斥
+            </button>
+          ) : null}
+          {frozen ? (
+            <span className="layer-lock" title="自动驱动图层，已冻结">
+              <IconLock size={12} />
+            </span>
+          ) : (
+            <button
+              className={`layer-eye ${hidden ? 'off' : ''}`}
+              title={hidden ? '在预览中显示该图层/组' : '在预览中隐藏该图层/组'}
+              onClick={(event) => {
+                event.stopPropagation()
+                if (isGroup) onToggleGroup(node.path)
+                else onToggleLayer(node.id)
+              }}
+            >
+              {hidden ? <IconEyeOff size={12} /> : <IconEye size={12} />}
+            </button>
+          )}
         </div>
         {isGroup && isOpen ? node.children.map((child) => renderNode(child, depth + 1)) : null}
       </div>

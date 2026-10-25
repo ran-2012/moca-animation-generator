@@ -69,6 +69,10 @@ Windows 网络盘的 `exec("net use")`（非必要调用）。npm scripts 已经
 
 ## 使用流程
 
+0. **打开项目** → 顶栏「打开项目」列出 `data/projects.json` 里的历史快照
+   （PSD / SVP / 音频组合 + 更新时间），选中后重新拉取 tree / manifest、
+   重生成时间轴并恢复时间与图层可见性；单条记录可删除。自动保存会按素材
+   组合 upsert，不会让列表无限增长。
 1. **导入 PSD** → 左侧图层树（可折叠 / 过滤 / 眼睛图标写入
    `base.hiddenGroups`、`base.hiddenLayers`）→ 图层缩略图来自
    `/api/psd/{id}/thumb/{layerId}`。

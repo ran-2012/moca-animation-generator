@@ -109,6 +109,32 @@ def test_kana_lyrics_map_to_phonemes():
     assert svp_service.lyric_to_plan("ー", language="japanese")["method"] == "sustain"
 
 
+def test_kana_rules_cover_yoon_sokuon_and_long_vowels():
+    # びょ/まっ 这类歌词以前会被判成没有元音或被促音吞掉，这里锁住规则。
+    cases = {
+        "びょ": (["b", "y", "o"], "o", "closed"),
+        "きょ": (["k", "y", "o"], "o", None),
+        "まっ": (["m", "a", "cl"], "a", "closed"),
+        "いっ": (["i", "cl"], "i", None),
+        "んっ": (["n", "cl"], "n", None),
+        "あん": (["a", "n"], "a", None),
+        "きょう": (["k", "y", "o", "u"], "o", None),
+        "せんせい": (["s", "e", "n", "s", "e", "i"], "e", None),
+        "ちぇ": (["ch", "e"], "e", None),
+        "きょー": (["k", "y", "o", "ー"], "o", None),
+    }
+    for lyric, (symbols, viseme, onset) in cases.items():
+        plan = svp_service.lyric_to_plan(lyric, language="japanese")
+        assert [phone["sym"] for phone in plan["phones"]] == symbols, lyric
+        assert plan["main_viseme"] == viseme, lyric
+        assert plan["onset_viseme"] == onset, lyric
+
+    # 拨音只做尾音，不能覆盖前一个音节的元音。
+    assert svp_service.lyric_to_plan("あん", language="japanese")["coda_viseme"] == "n"
+    # Synthesizer V 会把单独的「ん」写成 n。
+    assert svp_service.lyric_to_plan("n", language="japanese")["main_viseme"] == "n"
+
+
 # ---------------------------------------------------------------------------
 # upload
 # ---------------------------------------------------------------------------

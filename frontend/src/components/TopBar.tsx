@@ -5,6 +5,7 @@ interface TopBarProps {
   projectName: string
   onProjectName: (value: string) => void
   onNewProject: () => void
+  onOpenProjects: () => void
   onImportPsd: () => void
   onImportSvp: () => void
   onImportAudio: () => void
@@ -20,6 +21,7 @@ export function TopBar({
   projectName,
   onProjectName,
   onNewProject,
+  onOpenProjects,
   onImportPsd,
   onImportSvp,
   onImportAudio,
@@ -49,6 +51,10 @@ export function TopBar({
 
       <button className="btn ghost topbar-new" onClick={onNewProject} title="清空当前工作区（素材与映射）">
         新建
+      </button>
+
+      <button className="btn ghost topbar-open" onClick={onOpenProjects} title="打开自动保存的历史项目">
+        打开项目
       </button>
 
       <div className="topbar-spacer" />

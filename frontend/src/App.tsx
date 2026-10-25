@@ -5,13 +5,16 @@ import {
   audioFileUrl,
   automap,
   bake,
+  deleteProject,
   generateTimeline,
   getManifest,
   getPeaks,
   getTree,
   isMockEnabled,
   layerThumbUrl,
+  listProjects,
   loadPreviousSession,
+  loadProject,
   loadSession,
   probeHealth,
   saveBpm,
@@ -33,6 +36,7 @@ import { MultiTrackTimeline } from './components/MultiTrackTimeline'
 import { SvpPanel } from './components/SvpPanel'
 import { AudioPanel } from './components/AudioPanel'
 import { ExportPanel } from './components/ExportPanel'
+import { ProjectPanel } from './components/ProjectPanel'
 import { StatePanel } from './components/StatePanel'
 import { StatusBar } from './components/StatusBar'
 import {
@@ -66,6 +70,7 @@ import type {
   ChannelName,
   LayerNode,
   MappingProfile,
+  ProjectSummary,
   PsdUploadInfo,
   SessionState,
   StageState,
@@ -180,6 +185,10 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
   const [sessionReady, setSessionReady] = useState(false)
+  const [projectsOpen, setProjectsOpen] = useState(false)
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectsError, setProjectsError] = useState<string | null>(null)
 
   // layout ------------------------------------------------------------------
   const [layout, setLayout] = useState<LayoutState>(loadLayout)
@@ -453,6 +462,177 @@ export default function App() {
     [exclusiveGroups, layerIndex, mappedIds],
   )
 
+  // One restore path shared by startup hydration and opening a saved project.
+  const applyTokenRef = useRef(0)
+
+  const applySession = useCallback(
+    async (session: SessionState, note: string) => {
+      const token = ++applyTokenRef.current
+      const alive = (): boolean => applyTokenRef.current === token
+
+      setPlaying(false)
+      audioRef.current?.pause()
+
+      const nextMock = Boolean(session.mockMode)
+      setMockMode(nextMock)
+      setMockEnabled(nextMock)
+      try {
+        window.localStorage.setItem('mocadiff.mock', nextMock ? '1' : '0')
+      } catch {
+        // storage unavailable
+      }
+
+      setProjectName(session.projectName || '未命名项目')
+      setPsd(session.psd ?? null)
+      setProfile(session.profile ?? null)
+      setHiddenGroups(new Set(session.hiddenGroups ?? []))
+      setHiddenLayers(new Set(session.hiddenLayers ?? []))
+      setExclusiveGroups(new Set(session.exclusiveGroups ?? []))
+      setSelectedLayerId(session.selectedLayerId ?? null)
+      setSvp(session.svp ?? null)
+      setSelectedTrack(session.selectedTrack ?? null)
+      setMappingSetId(session.mappingSetId ?? session.profile?.defaultMappingSetId ?? 'standard')
+      setAnimationModeId(session.animationModeId ?? 'natural')
+      if (session.timelineView) {
+        const span = clamp(session.timelineView.span, 0.002, 1)
+        setTimelineView({
+          start: clamp(session.timelineView.start, 0, 1 - span),
+          span,
+        })
+      }
+      setAudio(session.audio ?? null)
+      setAudioUrl(session.audio?.assetId ? audioFileUrl(session.audio.assetId) : null)
+      setBpm(session.bpm ?? null)
+      setOffset(session.offset ?? 0)
+      setSway(normalizeSway(session.sway))
+      setBpmDirty(false)
+      setDirty(false)
+
+      // Drop derived state from whatever project was open before.
+      setTree(null)
+      setManifest(null)
+      setManifestStale(false)
+      setBakeState({ status: 'idle' })
+      setTimeline(null)
+      setBlinks([])
+      setTimelineWarnings([])
+      setPeaks(null)
+      setGenerating(false)
+      setStatusText('正在打开项目…')
+
+      let restoredDuration = session.audio?.durationSec ?? 0
+
+      if (session.psd?.assetId) {
+        try {
+          const [treeData, manifestData] = await Promise.all([
+            getTree(session.psd.assetId),
+            getManifest(session.psd.assetId),
+          ])
+          if (!alive()) return
+          setTree(treeData)
+          if (manifestData) {
+            setManifest(manifestData)
+            setManifestStale(Boolean(session.manifestStale))
+            setBakeState({ status: 'done', manifest: manifestData })
+          }
+        } catch (error) {
+          if (alive()) notify('error', `恢复 PSD 缓存失败：${describeError(error)}`)
+        }
+      }
+
+      if (session.svp?.assetId && session.selectedTrack != null) {
+        try {
+          const result = await generateTimeline(
+            session.svp.assetId,
+            session.selectedTrack,
+            session.fps || 60,
+            {
+              psdAssetId: session.psd?.assetId,
+              mappingSetId: session.mappingSetId ?? session.profile?.defaultMappingSetId ?? 'standard',
+              animationModeId: session.animationModeId ?? 'natural',
+            },
+          )
+          if (!alive()) return
+          setTimeline(result.timeline)
+          setBlinks(result.blinks)
+          setTimelineWarnings(result.warnings ?? [])
+          if (result.timeline.duration > 0) restoredDuration = result.timeline.duration
+        } catch (error) {
+          if (alive()) notify('error', `恢复口型时间轴失败：${describeError(error)}`)
+        }
+      }
+
+      if (session.audio?.assetId) {
+        try {
+          const peaksData = await getPeaks(session.audio.assetId, 1200)
+          if (alive()) setPeaks(peaksData.peaks)
+        } catch (error) {
+          if (alive()) notify('error', `恢复音频波形失败：${describeError(error)}`)
+        }
+      }
+
+      if (!alive()) return
+      const restoredTime =
+        restoredDuration > 0 ? Math.min(session.time || 0, restoredDuration) : session.time || 0
+      setTime(restoredTime)
+      timeRef.current = restoredTime
+      setStatusText(note)
+      setSessionReady(true)
+    },
+    [describeError, notify],
+  )
+
+  // Project history: every autosave upserts an entry; opening one replays the
+  // same restore path as startup.
+  const refreshProjects = useCallback(async () => {
+    setProjectsLoading(true)
+    setProjectsError(null)
+    try {
+      setProjects(await listProjects())
+    } catch (error) {
+      setProjectsError(describeError(error))
+    } finally {
+      setProjectsLoading(false)
+    }
+  }, [describeError])
+
+  const openProjectsPanel = useCallback(() => {
+    setProjectsOpen(true)
+    void refreshProjects()
+  }, [refreshProjects])
+
+  const handleOpenProject = useCallback(
+    async (projectId: string) => {
+      setProjectsLoading(true)
+      try {
+        const result = await loadProject(projectId)
+        if (!result.session) throw new Error('该项目快照为空')
+        const label = result.session.projectName || '未命名项目'
+        setProjectsOpen(false)
+        await applySession(result.session, `已打开项目：${label}`)
+        notify('success', `已打开项目：${label}`)
+      } catch (error) {
+        notify('error', `打开项目失败：${describeError(error)}`)
+      } finally {
+        setProjectsLoading(false)
+      }
+    },
+    [applySession, describeError, notify],
+  )
+
+  const handleDeleteProject = useCallback(
+    async (projectId: string) => {
+      try {
+        await deleteProject(projectId)
+        setProjects((prev) => prev.filter((item) => item.id !== projectId))
+        notify('info', '已删除该项目的历史记录')
+      } catch (error) {
+        notify('error', `删除项目失败：${describeError(error)}`)
+      }
+    },
+    [describeError, notify],
+  )
+
   // initial data-source detection + restore the last backend session ----------
   useEffect(() => {
     let cancelled = false
@@ -534,112 +714,22 @@ export default function App() {
         return
       }
 
-      nextMock = Boolean(session.mockMode)
-      setMockMode(nextMock)
-      setMockEnabled(nextMock)
-      try {
-        window.localStorage.setItem('mocadiff.mock', nextMock ? '1' : '0')
-      } catch {
-        // storage unavailable
-      }
-
-      setProjectName(session.projectName || '未命名项目')
-      setPsd(session.psd ?? null)
-      setProfile(session.profile ?? null)
-      setHiddenGroups(new Set(session.hiddenGroups ?? []))
-      setHiddenLayers(new Set(session.hiddenLayers ?? []))
-      setExclusiveGroups(new Set(session.exclusiveGroups ?? []))
-      setSelectedLayerId(session.selectedLayerId ?? null)
-      setSvp(session.svp ?? null)
-      setSelectedTrack(session.selectedTrack ?? null)
-      setMappingSetId(session.mappingSetId ?? session.profile?.defaultMappingSetId ?? 'standard')
-      setAnimationModeId(session.animationModeId ?? 'natural')
-      if (session.timelineView) {
-        const span = clamp(session.timelineView.span, 0.002, 1)
-        setTimelineView({
-          start: clamp(session.timelineView.start, 0, 1 - span),
-          span,
-        })
-      }
-      setAudio(session.audio ?? null)
-      setAudioUrl(session.audio?.assetId ? audioFileUrl(session.audio.assetId) : null)
-      setBpm(session.bpm ?? null)
-      setOffset(session.offset ?? 0)
-      setSway(normalizeSway(session.sway))
-      setBpmDirty(false)
-      setStatusText('恢复上次会话…')
-
-      let restoredDuration = session.audio?.durationSec ?? 0
-
-      if (session.psd?.assetId) {
-        try {
-          const [treeData, manifestData] = await Promise.all([
-            getTree(session.psd.assetId),
-            getManifest(session.psd.assetId),
-          ])
-          if (cancelled) return
-          setTree(treeData)
-          if (manifestData) {
-            setManifest(manifestData)
-            setManifestStale(Boolean(session.manifestStale))
-            setBakeState({ status: 'done', manifest: manifestData })
-          }
-        } catch (error) {
-          if (!cancelled) notify('error', `恢复 PSD 缓存失败：${describeError(error)}`)
-        }
-      }
-
-      if (session.svp?.assetId && session.selectedTrack != null) {
-        try {
-          const result = await generateTimeline(
-            session.svp.assetId,
-            session.selectedTrack,
-            session.fps || 60,
-            {
-              psdAssetId: session.psd?.assetId,
-              mappingSetId: session.mappingSetId ?? session.profile?.defaultMappingSetId ?? 'standard',
-              animationModeId: session.animationModeId ?? 'natural',
-            },
-          )
-          if (cancelled) return
-          setTimeline(result.timeline)
-          setBlinks(result.blinks)
-          setTimelineWarnings(result.warnings ?? [])
-          if (result.timeline.duration > 0) restoredDuration = result.timeline.duration
-        } catch (error) {
-          if (!cancelled) notify('error', `恢复口型时间轴失败：${describeError(error)}`)
-        }
-      }
-
-      if (session.audio?.assetId) {
-        try {
-          const peaksData = await getPeaks(session.audio.assetId, 1200)
-          if (!cancelled) setPeaks(peaksData.peaks)
-        } catch (error) {
-          if (!cancelled) notify('error', `恢复音频波形失败：${describeError(error)}`)
-        }
-      }
-
-      if (!cancelled) {
-        const restoredTime =
-          restoredDuration > 0 ? Math.min(session.time || 0, restoredDuration) : session.time || 0
-        setTime(restoredTime)
-        timeRef.current = restoredTime
-        setStatusText(
-          restoredPrevious
-            ? '已恢复切换数据源前的项目 · 可继续编辑'
-            : '已恢复上次会话 · 刷新前的工作区已还原',
-        )
-        if (restoredPrevious) {
-          notify('info', '检测到切换数据源时被重置的项目，已自动恢复上次项目。')
-        }
-        setSessionReady(true)
+      if (cancelled) return
+      await applySession(
+        session,
+        restoredPrevious
+          ? '已恢复切换数据源前的项目 · 可继续编辑'
+          : '已恢复上次会话 · 刷新前的工作区已还原',
+      )
+      if (cancelled) return
+      if (restoredPrevious) {
+        notify('info', '检测到切换数据源时被重置的项目，已自动恢复上次项目。')
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [describeError, notify])
+  }, [applySession, notify])
 
   // Auto-save the session after meaningful edits (not every playback frame).
   useEffect(() => {
@@ -1415,6 +1505,7 @@ export default function App() {
         projectName={projectName}
         onProjectName={setProjectName}
         onNewProject={handleNewProject}
+        onOpenProjects={openProjectsPanel}
         onImportPsd={openPsdPicker}
         onImportSvp={openSvpPicker}
         onImportAudio={openAudioPicker}
@@ -1786,6 +1877,17 @@ export default function App() {
         bpm={bpm}
         audioStart={offset}
         onNotify={notify}
+      />
+
+      <ProjectPanel
+        open={projectsOpen}
+        projects={projects}
+        loading={projectsLoading}
+        error={projectsError}
+        onClose={() => setProjectsOpen(false)}
+        onOpen={handleOpenProject}
+        onDelete={handleDeleteProject}
+        onRefresh={() => void refreshProjects()}
       />
     </div>
   )

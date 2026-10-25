@@ -291,3 +291,11 @@ export function IconLayout(props: Props) {
     </svg>
   )
 }
+
+export function IconFolder(props: Props) {
+  return (
+    <svg {...svgProps(props)}>
+      <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h9A1.5 1.5 0 0 1 21 10v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18z" />
+    </svg>
+  )
+}

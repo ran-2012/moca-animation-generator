@@ -28,6 +28,7 @@ def _restore(path: Path, payload: bytes | None) -> None:
 def test_session_roundtrip_and_clear():
     original = _read(session_service.session_path())
     original_previous = _read(session_service.previous_path())
+    original_projects = _read(session_service.projects_path())
     try:
         state = SessionState(
             projectName="测试项目",
@@ -82,11 +83,13 @@ def test_session_roundtrip_and_clear():
     finally:
         _restore(session_service.session_path(), original)
         _restore(session_service.previous_path(), original_previous)
+        _restore(session_service.projects_path(), original_projects)
 
 
 def test_previous_session_kept_when_mode_switch_saves_empty_state():
     original = _read(session_service.session_path())
     original_previous = _read(session_service.previous_path())
+    original_projects = _read(session_service.projects_path())
     try:
         session_service.clear()
         live = SessionState(
@@ -117,9 +120,56 @@ def test_previous_session_kept_when_mode_switch_saves_empty_state():
     finally:
         _restore(session_service.session_path(), original)
         _restore(session_service.previous_path(), original_previous)
+        _restore(session_service.projects_path(), original_projects)
+
+
+def test_project_history_upserts_and_deletes():
+    original = _read(session_service.session_path())
+    original_previous = _read(session_service.previous_path())
+    original_projects = _read(session_service.projects_path())
+    try:
+        session_service.projects_path().unlink(missing_ok=True)
+        first = SessionState(
+            projectName="项目 A",
+            mockMode=False,
+            psd={"assetId": "psd1", "filename": "a.psd"},
+            svp={"assetId": "svp1", "filename": "a.svp"},
+            audio={"assetId": "aud1", "filename": "a.wav"},
+        )
+        session_service.save(first)
+        items = session_service.list_projects()
+        assert len(items) == 1
+        assert items[0]["name"] == "项目 A"
+        assert items[0]["psd"] == "a.psd"
+        assert "session" not in items[0]
+
+        # Autosaves of the same assets update one entry instead of growing.
+        session_service.save(SessionState(
+            projectName="项目 A2",
+            mockMode=False,
+            psd={"assetId": "psd1", "filename": "a.psd"},
+            svp={"assetId": "svp1", "filename": "a.svp"},
+            audio={"assetId": "aud1", "filename": "a.wav"},
+        ))
+        items = session_service.list_projects()
+        assert len(items) == 1
+        assert items[0]["name"] == "项目 A2"
+
+        state, _ = session_service.load_project(items[0]["id"])
+        assert state is not None and state.projectName == "项目 A2"
+        assert state.psd == {"assetId": "psd1", "filename": "a.psd"}
+        assert session_service.delete_project(items[0]["id"]) is True
+        # Listing re-seeds from the current session on disk, so assert on the id.
+        assert session_service.load_project(items[0]["id"])[0] is None
+        assert session_service.delete_project("missing") is False
+    finally:
+        _restore(session_service.session_path(), original)
+        _restore(session_service.previous_path(), original_previous)
+        _restore(session_service.projects_path(), original_projects)
 
 
 if __name__ == "__main__":
     test_session_roundtrip_and_clear()
     test_previous_session_kept_when_mode_switch_saves_empty_state()
+    test_project_history_upserts_and_deletes()
     print("session tests passed")

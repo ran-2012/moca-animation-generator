@@ -155,6 +155,31 @@ globalThis.fetch = async (input, init) => {
       text: async () => '',
     }
   }
+  if (url.includes('/api/session/projects')) {
+    if ((init?.method ?? 'GET') === 'DELETE') {
+      return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '{"ok":true}' }
+    }
+    const payload = {
+      projects: [
+        {
+          id: 'prj_smoke',
+          name: '冒烟项目',
+          createdAt: '2025-01-01T00:00:00Z',
+          updatedAt: '2025-01-02T03:04:05Z',
+          psd: 'moca.psd',
+          svp: '流沙.svp',
+          audio: 'test.wav',
+          mockMode: true,
+        },
+      ],
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    }
+  }
   return {
     ok: false,
     status: 404,
@@ -560,6 +585,16 @@ try {
     assert(true, '贴图过期时禁止导出')
     document.querySelector('.modal-head .icon-btn').click()
     await waitFor('导出面板关闭', () => !document.querySelector('.modal-overlay.open'))
+
+    step('项目历史 → 打开项目面板')
+    clickButton('打开项目')
+    await waitFor('项目列表', () => document.querySelectorAll('.project-row').length === 1)
+    const projectRow = document.querySelector('.project-row')
+    assert((projectRow.textContent ?? '').includes('冒烟项目'), '项目面板列出历史项目')
+    assert((projectRow.textContent ?? '').includes('moca.psd'), '项目行显示素材文件名')
+    assert(Boolean(projectRow.querySelector('.project-actions .btn.primary')), '项目行提供打开按钮')
+    clickButton('关闭')
+    await waitFor('项目面板关闭', () => !document.querySelector('.modal-overlay.open'))
 
     step('Mock / 真实后端一键切换')
     document.querySelector('.mock-switch').click()

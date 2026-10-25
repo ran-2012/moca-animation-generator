@@ -38,6 +38,26 @@ def put_session(state: SessionState) -> SessionSaveResult:
     return SessionSaveResult(ok=True, savedAt=saved_at)
 
 
+@router.get("/session/projects")
+def list_projects() -> dict:
+    return {"projects": session_service.list_projects()}
+
+
+@router.get("/session/projects/{project_id}", response_model=SessionResponse)
+def get_project(project_id: str) -> SessionResponse:
+    state, saved_at = session_service.load_project(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="项目不存在或已损坏")
+    return SessionResponse(session=state, savedAt=saved_at)
+
+
+@router.delete("/session/projects/{project_id}")
+def delete_project(project_id: str) -> dict:
+    if not session_service.delete_project(project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"ok": True}
+
+
 @router.delete("/session")
 def delete_session() -> dict:
     session_service.clear()

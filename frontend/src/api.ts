@@ -11,6 +11,7 @@ import type {
   LayerNode,
   MappingProfile,
   PeaksResult,
+  ProjectSummary,
   PsdUploadInfo,
   RenderFormat,
   RenderJobInfo,
@@ -525,4 +526,23 @@ export async function saveSession(session: SessionState, keepalive = false): Pro
 
 export async function clearSession(): Promise<void> {
   await request('/api/session', { method: 'DELETE' })
+}
+
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const raw = await request<{ projects: ProjectSummary[] }>('/api/session/projects', undefined, true)
+  return Array.isArray(raw?.projects) ? raw.projects : []
+}
+
+export async function loadProject(projectId: string): Promise<SessionResponse> {
+  const raw = await request<SessionResponse>(
+    `/api/session/projects/${encodeURIComponent(projectId)}`,
+    undefined,
+    true,
+  )
+  if (!raw) throw new ApiError('项目读取失败：后端返回空响应')
+  return raw
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await request(`/api/session/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }, true)
 }

@@ -179,6 +179,14 @@ moca-diff/
 
 viseme 枚举：`closed | n | f | a | i | u | e | o`。
 
+歌词 → 音素规则（`backend/app/services/svp_service.py`）：
+
+- 假名：2 字表优先（きゃ/びょ/ふぁ…），单字 + 小假名按「换元音」组合（ちぇ → `ch e`、つぁ → `ts a`）。
+- 拗音声母拆成「辅音 + 半元音」（びょ → `b(closed) y(i) o`），保证闭口起势不丢。
+- 促音 `っ`（`cl`）与拨音 `ん`（`n`）**不覆盖**主元音：まっ → 主 `a`，あん → 主 `a` + 尾 `n`。
+- 长音（おう / おお / えい / ー）沿用前一个元音口型：きょう → 主 `o`。
+- 单独鼻音歌词 `n` / `m` / `ng` 直接映射 `n`；假名歌词里混入的汉字用拼音兜底，避免整音丢失。
+
 动画模式：`classic | clear | natural | expressive`。`classic` 保留旧 `frames` 形状；其他模式用 `mouthPose` 表示辅音、起势、音高开度和收势姿态。`frames` / `blinks` 是兼容字段，预览和导出优先消费 `mouthPose` / `tracks`，缺失时回退到旧字段。
 
 ### 4.5 Project
@@ -324,6 +332,19 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
 | GET | `/api/session/previous` | — | `{session: SessionState \| null, savedAt}` 切换数据源前的项目备份 |
 | PUT | `/api/session` | `SessionState`（camelCase） | `{ok:true, savedAt}` |
 | DELETE | `/api/session` | — | `{ok:true}` |
+| GET | `/api/session/projects` | — | `{projects: ProjectSummary[]}` 历史项目，按 `updatedAt` 倒序 |
+| GET | `/api/session/projects/{projectId}` | — | `{session: SessionState, savedAt}`；不存在返回 404 |
+| DELETE | `/api/session/projects/{projectId}` | — | `{ok:true}`；不存在返回 404 |
+
+**历史项目**：每次 `PUT /api/session` 成功后，后端按「数据源 + psd/svp/audio 三个 assetId」签名 upsert 一条记录到 `data/projects.json`（最多 50 条，同一素材组合的自动保存只更新同一条），记录里保存完整 `SessionState` 快照，因此顶栏「打开项目」可以回到任意历史素材组合。`GET /api/session/projects` 返回的历史条目**不含** `session` 与 `signature`：
+
+```json
+{"id": "prj_38536b3df489", "name": "未命名项目", "createdAt": "2026-10-25T12:00:00Z",
+ "updatedAt": "2026-10-25T13:07:57Z", "psd": "moca.psd", "svp": "热异常.svp",
+ "audio": "热异常_Edit_1_Export_1.mp3", "mockMode": false}
+```
+
+若历史为空而同目录 `data/session.json` 仍持有项目，首次列表会把当前会话补记一条，避免升级后看不到正在编辑的项目。
 
 **LIVE/MOCK 切换保护**：每次 `PUT` 前，若已保存的项目即将被空快照或另一种 `mockMode` 的快照覆盖，后端先把它写进 `data/session.prev.json`；`DELETE` 会同时清掉备份。前端切换数据源时还会把两种模式各自的最新快照存入 `localStorage`，切换后通过 `mocadiff.pendingRestore` 恢复目标模式的项目。若启动时当前会话为空，前端会尝试 `/api/session/previous` 自动恢复上一项目。
 

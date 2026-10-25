@@ -44,7 +44,7 @@ VISEME_OPENNESS = {
 }
 
 ANIMATION_MODES = {"classic", "clear", "natural", "expressive"}
-MODE_VERSION = 2
+MODE_VERSION = 3
 
 # timeline shaping (same defaults as the verified prototype)
 TAIL_SEC = 0.5
@@ -218,6 +218,16 @@ _KANA_ROMAJI = {
     "ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o",
 }
 
+# 小书假名把前一个音节的元音替换掉（ちぇ / ふゅ / つぁ），而不是新增一个音节。
+_SMALL_VOWELS = {"ぁ": "a", "ぃ": "i", "ぅ": "u", "ぇ": "e", "ぉ": "o"}
+# 单独出现的鼻音歌词（Synthesizer V 会把「ん」写成 n，也有 hm / hng）。
+_STANDALONE_NASALS = {"n", "m", "ng", "hm", "hng"}
+# 日语长音：第二个元音延长前一个口型，而不是换一个嘴形（おう -> oː / えい -> eː）。
+_LONG_VOWEL_PAIRS = {
+    ("a", "a"), ("i", "i"), ("u", "u"), ("e", "e"), ("o", "o"), ("o", "u"), ("e", "i"),
+}
+_LONG_VOWEL_CHARS = {"ー", "ｰ"}
+
 # Small baked table for the characters used by the bundled projects.  When
 # pypinyin is available it is preferred (see _load_pypinyin); the table keeps
 # the common case working offline.
@@ -288,6 +298,14 @@ def _plan_pinyin_syllable(syllable: str) -> dict:
     normalized = _normalize_pinyin(syllable)
     if not normalized:
         return _unmapped_plan(syllable, "empty pinyin")
+    if normalized in _STANDALONE_NASALS:
+        return {
+            "method": "pinyin", "raw": syllable, "normalized": normalized,
+            "initial": "", "final": normalized,
+            "phones": [{"sym": normalized, "kind": "coda", "viseme": "n"}],
+            "onset_viseme": None, "main_viseme": "n", "coda_viseme": "n",
+            "confidence": "rule",
+        }
     initial, final = _split_pinyin_syllable(normalized)
     if initial == "y" and final in _Y_FINAL_FIX:
         final = _Y_FINAL_FIX[final]
@@ -457,6 +475,12 @@ def _pinyin_for_char(char: str) -> str:
     return _FALLBACK_PINYIN.get(char, "")
 
 
+def _vowel_bearing(plan: dict) -> bool:
+    """A syllable carries the mouth shape only when it ends in a vowel."""
+    final = str(plan.get("final") or "")
+    return bool(final) and final[-1] in "aiueo"
+
+
 def _merge_syllable_plans(plans: list[dict], raw: str) -> dict:
     if len(plans) == 1:
         merged = dict(plans[0])
@@ -466,10 +490,22 @@ def _merge_syllable_plans(plans: list[dict], raw: str) -> dict:
     for plan in plans:
         phones.extend(plan.get("phones") or [])
     last_vowel = None
+    # 促音（cl）与拨音（n）不携带元音，不能覆盖前一个音节的嘴形；否则「まっ」
+    # 会被判成全程闭口，「あん」会变成纯鼻音。
     for plan in reversed(plans):
-        if plan.get("main_viseme"):
+        if _vowel_bearing(plan) and plan.get("main_viseme"):
             last_vowel = plan["main_viseme"]
             break
+    if last_vowel is None:
+        for plan in reversed(plans):
+            if plan.get("main_viseme") and plan.get("initial") != "cl":
+                last_vowel = plan["main_viseme"]
+                break
+    if last_vowel is None:
+        for plan in reversed(plans):
+            if plan.get("main_viseme"):
+                last_vowel = plan["main_viseme"]
+                break
     first = plans[0]
     return {
         "method": "pinyin_words", "raw": raw,
@@ -484,23 +520,88 @@ def _merge_syllable_plans(plans: list[dict], raw: str) -> dict:
     }
 
 
+def _split_initial_phones(initial: str) -> list[dict]:
+    """``kyo`` -> k + semivowel y, ``bya`` -> b(closed) + y(i).
+
+    Without this the yōon onset (by / ky / gy / ny...) has no viseme at all, so
+    「びょ」开头的闭口动作会丢掉。
+    """
+    if len(initial) >= 2 and initial.endswith("y"):
+        base = initial[:-1]
+        return [
+            {"sym": base, "kind": "initial", "viseme": PINYIN_INITIAL_VISEME.get(base)},
+            {"sym": "y", "kind": "semivowel", "viseme": "i"},
+        ]
+    if not initial:
+        return []
+    return [{"sym": initial, "kind": "initial", "viseme": PINYIN_INITIAL_VISEME.get(initial)}]
+
+
+def _apply_small_vowel(romaji: str, vowel: str) -> str:
+    """ち + ぇ -> che / ふ + ぃ -> fi / う + ぃ -> wi."""
+    stem = romaji[:-1] if romaji[-1:] in "aiueo" else romaji
+    if not stem:
+        if romaji == "u":
+            return "w" + vowel
+        if romaji == "i" and vowel == "e":
+            return "ye"
+        return vowel
+    if stem in ("sh", "ch", "j", "ts"):
+        return stem + vowel
+    if stem.endswith(("i", "u")):
+        stem = stem[:-1]
+    return (stem or "") + vowel
+
+
 def _plan_kana(text: str) -> dict:
     hiragana = "".join(chr(ord(char) - 0x60) if "ァ" <= char <= "ヶ" else char for char in text)
     plans: list[dict] = []
     index = 0
+    previous_main: str | None = None
     while index < len(hiragana):
+        char = hiragana[index]
+        if char in _SILENT_CHARS or char.isspace():
+            index += 1
+            continue
+        if char in _LONG_VOWEL_CHARS:
+            index += 1
+            if previous_main:
+                plans.append({
+                    "method": "kana", "raw": char, "normalized": "ー",
+                    "initial": "", "final": previous_main,
+                    "phones": [{"sym": char, "kind": "vowel_group", "viseme": previous_main}],
+                    "onset_viseme": None, "main_viseme": previous_main,
+                    "coda_viseme": None, "confidence": "rule",
+                })
+            continue
         token = hiragana[index:index + 2]
         romaji = _KANA_ROMAJI.get(token)
         if romaji:
             index += 2
         else:
-            token = hiragana[index]
-            romaji = _KANA_ROMAJI.get(token)
+            token = char
+            romaji = _KANA_ROMAJI.get(char)
             index += 1
+            if romaji and romaji not in ("cl", "n"):
+                small = _SMALL_VOWELS.get(hiragana[index:index + 1])
+                if small:
+                    romaji = _apply_small_vowel(romaji, small)
+                    token += hiragana[index]
+                    index += 1
         if not romaji:
-            if token in _SILENT_CHARS or token.isspace():
-                continue
+            # 日文歌词里常混汉字（死ん / 数 等）：用拼音兜底，至少保住元音口型，
+            # 避免整条歌词只剩后面的拨音。
+            if _CJK_RE.match(token):
+                pinyin = _pinyin_for_char(token)
+                if pinyin:
+                    kanji_plan = _plan_pinyin_syllable(pinyin)
+                    if kanji_plan["method"] != "unmapped":
+                        kanji_plan["method"] = "kana_kanji"
+                        plans.append(kanji_plan)
+                        previous_main = kanji_plan.get("main_viseme") or previous_main
+                        continue
             plans.append(_unmapped_plan(token, "unsupported kana %r" % token))
+            previous_main = None
             continue
         if romaji == "cl":
             plans.append({
@@ -512,18 +613,28 @@ def _plan_kana(text: str) -> dict:
         if romaji == "n":
             initial, final, main = "", "n", "n"
             phones = [{"sym": "n", "kind": "coda", "viseme": "n"}]
+            previous_main = None
         else:
             vowel_index = next((i for i, char in enumerate(romaji) if char in "aiueo"), -1)
             initial, final = romaji[:vowel_index], romaji[vowel_index:]
             main = romaji[vowel_index]
-            phones = []
-            if initial:
-                phones.append({"sym": initial, "kind": "initial", "viseme": PINYIN_INITIAL_VISEME.get(initial)})
-            phones.append({"sym": final, "kind": "final", "viseme": main})
+            kind = "final"
+            if not initial and previous_main and (previous_main, main) in _LONG_VOWEL_PAIRS:
+                # 长音：おう / えい / おお 保持前一个元音的嘴形。
+                main = previous_main
+                kind = "vowel_group"
+            phones = _split_initial_phones(initial)
+            phones.append({"sym": final, "kind": kind, "viseme": main})
+            previous_main = main
+        onset_viseme = next(
+            (phone["viseme"] for phone in phones
+             if phone.get("kind") == "initial" and phone.get("viseme")),
+            None,
+        )
         plans.append({
             "method": "kana", "raw": token, "normalized": romaji,
             "initial": initial, "final": final, "phones": phones,
-            "onset_viseme": PINYIN_INITIAL_VISEME.get(initial), "main_viseme": main,
+            "onset_viseme": onset_viseme, "main_viseme": main,
             "coda_viseme": "n" if romaji == "n" else None, "confidence": "rule",
         })
     if not plans:

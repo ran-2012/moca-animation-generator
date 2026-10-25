@@ -348,3 +348,14 @@ export interface SessionResponse {
   session: SessionState | null
   savedAt: string | null
 }
+
+export interface ProjectSummary {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  psd: string | null
+  svp: string | null
+  audio: string | null
+  mockMode: boolean
+}

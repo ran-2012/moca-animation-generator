@@ -11,7 +11,12 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from ..models.render import RenderJobInfo, RenderRequest
+from ..models.render import (
+    RenderCleanupRequest,
+    RenderExportEntry,
+    RenderJobInfo,
+    RenderRequest,
+)
 from ..services import render_service
 
 log = logging.getLogger("mocadiff.render")
@@ -32,6 +37,21 @@ def create_render(req: RenderRequest) -> RenderJobInfo:
     except Exception as exc:  # noqa: BLE001 - never leak a stack trace to the UI
         log.exception("could not create render job")
         raise HTTPException(status_code=500, detail=f"创建渲染任务失败：{exc}") from exc
+
+
+@router.get("/render/jobs", response_model=None)
+def list_render_jobs(limit: int = 100) -> dict:
+    """Export history (newest first).  Declared before ``/render/{job_id}``."""
+    return {"jobs": render_service.list_exports(limit=max(1, min(1000, limit)))}
+
+
+@router.post("/render/cleanup")
+def cleanup_renders(req: RenderCleanupRequest) -> dict:
+    try:
+        result = render_service.cleanup_exports(req.scope)
+    except render_service.RenderError as exc:
+        raise _error(exc) from exc
+    return {"ok": True, **result}
 
 
 @router.get("/render/{job_id}", response_model=RenderJobInfo)
@@ -60,3 +80,14 @@ def download_render(job_id: str) -> FileResponse:
         filename=path.name,
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.delete("/render/{job_id}")
+def delete_render(job_id: str) -> dict:
+    try:
+        deleted, freed = render_service.delete_job(job_id)
+    except render_service.RenderError as exc:
+        raise _error(exc) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="渲染任务不存在。")
+    return {"ok": True, "freedBytes": freed}

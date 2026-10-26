@@ -135,8 +135,14 @@ export function MultiTrackTimeline(props: Props) {
     const canvas = rulerRef.current
     if (!canvas) return
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    canvas.width = width * dpr
-    canvas.height = RULER_H * dpr
+    // Assigning width/height reallocates the backing store, so only do it when
+    // the size actually changed.
+    const pixelWidth = Math.floor(width * dpr)
+    const pixelHeight = Math.floor(RULER_H * dpr)
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
+    }
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -149,16 +155,18 @@ export function MultiTrackTimeline(props: Props) {
       ctx.strokeStyle = '#4b4b4b'; ctx.beginPath(); ctx.moveTo(x, 16); ctx.lineTo(x, 24); ctx.stroke()
       ctx.fillStyle = '#999999'; ctx.fillText(labelTime(tick), x + 3, 4)
     }
-    const playX = xAt(time)
-    ctx.fillStyle = '#55a5db'; ctx.beginPath(); ctx.moveTo(playX - 5, 18); ctx.lineTo(playX + 5, 18); ctx.lineTo(playX, 24); ctx.fill()
-  }, [time, view, width, xAt])
+  }, [view, width, xAt])
 
   const drawTracks = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    canvas.width = width * dpr
-    canvas.height = layout.height * dpr
+    const pixelWidth = Math.floor(width * dpr)
+    const pixelHeight = Math.floor(layout.height * dpr)
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth
+      canvas.height = pixelHeight
+    }
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -241,11 +249,13 @@ export function MultiTrackTimeline(props: Props) {
       }
       ctx.restore()
     }
-    const playX = xAt(time)
-    ctx.strokeStyle = '#55a5db'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(playX, 0); ctx.lineTo(playX, layout.height); ctx.stroke()
-  }, [audioDuration, audioStart, bpm, collapsed, layout, peaks, time, timeline, view, width, xAt])
+  }, [audioDuration, audioStart, bpm, collapsed, layout, peaks, timeline, view, width, xAt])
 
   useEffect(() => { drawRuler(); drawTracks() }, [drawRuler, drawTracks])
+
+  // The playhead lives in the DOM: moving it every frame is a single transform
+  // instead of repainting notes/visemes/waveform 60 times a second.
+  const playheadX = xAt(time)
 
   const timeAt = (clientX: number): number => {
     const rect = viewportRef.current?.getBoundingClientRect()
@@ -324,7 +334,13 @@ export function MultiTrackTimeline(props: Props) {
         onPointerCancel={pointerEnd}
       >
         <canvas ref={canvasRef} style={{ width: '100%', height: layout.height }} />
+        <div
+          className="timeline-playhead"
+          style={{ left: playheadX, height: layout.height }}
+          aria-hidden="true"
+        />
       </div>
+      <div className="timeline-playhead-marker" style={{ left: playheadX }} aria-hidden="true" />
     </div>
   )
 }

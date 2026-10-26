@@ -303,6 +303,27 @@ async function runExportFlow({ label, durationSeconds, expectMock }) {
     assert(bytes > 10000, `zip ${Math.round(bytes / 1024)} KB`)
     assert(successText.includes(`${expectedFrames} 帧`), '完成信息显示帧数')
   }
+
+  // export history: list → download link → delete one → clean the rest
+  byTestId('export-history-toggle').click()
+  await waitFor('导出记录列表', () => document.querySelectorAll('[data-testid="export-history-row"]').length >= 1)
+  const historyRows = document.querySelectorAll('[data-testid="export-history-row"]').length
+  assert(historyRows >= 1, `导出记录列出 ${historyRows} 项`)
+  assert(Boolean(byTestId('export-history-download')), '导出记录提供下载入口')
+  byTestId('export-history-delete').click()
+  await waitFor(
+    '删除单条导出记录',
+    () => document.querySelectorAll('[data-testid="export-history-row"]').length === historyRows - 1,
+  )
+  assert(true, '可删除单条导出记录')
+  if (document.querySelectorAll('[data-testid="export-history-row"]').length > 0) {
+    byTestId('export-cleanup-all').click()
+    await waitFor('清理确认出现', () => byTestId('export-cleanup-confirm'))
+    byTestId('export-cleanup-confirm').click()
+    await waitFor('批量清理完成', () => document.querySelectorAll('[data-testid="export-history-row"]').length === 0)
+    assert(true, '可批量清理导出记录')
+  }
+
   document.querySelector('.modal-head .icon-btn').click()
   await waitFor('导出面板关闭', () => !document.querySelector('.modal-overlay.open'))
 }
@@ -340,12 +361,15 @@ try {
   assert(fmt.formatTimecode(61.5) === '01:01.50', '时间码 mm:ss.cs')
   assert(fmt.formatTimecode(61.5, true, 60) === '01:01:30', '时间码含帧号')
   assert(sway.swayTransform(1, 120, sway.DEFAULT_SWAY).angle === 0, '摇摆关闭时不改变立绘')
-  const quarterSway = sway.swayTransform(0.25, 120, { enabled: true, amplitude: 1, frequency: 0.5, offset: 0 })
+  const quarterSway = sway.swayTransform(0.25, 120, { enabled: true, amplitude: 1, frequency: 0.5, offsetMs: 0 })
   assert(Math.abs(quarterSway.angle - Math.PI / 45) < 1e-9, '摇摆按 BPM、频率和幅度计算倾角')
-  assert(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offset: 0 }).length === 3, '摇摆轨按实际周期生成事件')
-  assert(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 2, offset: 0 }).length === 9, '摇摆轨反映频率倍率')
-  assert(Math.abs(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offset: 0 }, 0.25)[0].t - 0.25) < 1e-9, '摇摆轨跟随音频起点')
-  assert(sway.normalizeSway({ enabled: true, amplitude: 4, frequency: 8, offset: 100 }).amplitude === 1, '摇摆参数统一限制到导出范围')
+  assert(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offsetMs: 0 }).length === 3, '摇摆轨按实际周期生成事件')
+  assert(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 2, offsetMs: 0 }).length === 9, '摇摆轨反映频率倍率')
+  assert(Math.abs(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offsetMs: 0 }, 0.25)[0].t - 0.25) < 1e-9, '摇摆轨跟随音频起点')
+  assert(Math.abs(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offsetMs: -250 }, 0)[0].t - 0.25) < 1e-9, '摇摆偏移按毫秒推后相位')
+  assert(Math.abs(sway.swayEvents(2, 120, { enabled: true, amplitude: 1, frequency: 0.5, offsetMs: 250 }, 0)[0].t - 0.75) < 1e-9, '摇摆偏移按毫秒提前相位')
+  assert(sway.normalizeSway({ enabled: true, amplitude: 4, frequency: 8, offsetMs: 9000 }).amplitude === 1, '摇摆参数统一限制到导出范围')
+  assert(sway.normalizeSway({ enabled: true, amplitude: 1, frequency: 1, offsetMs: 9000 }).offsetMs === 2000, '摇摆偏移限制在 ±2000ms')
 
   const appModule = await server.ssrLoadModule('/src/App.tsx')
   const App = appModule.default
@@ -528,15 +552,28 @@ try {
     assert(swayControls && swayToggle && !swayToggle.checked, '显示独立摇摆控制且默认关闭')
     swayToggle.click()
     await sleep(100)
-    assert(swayToggle.checked && bodyText().includes('频率 (次/拍)') && bodyText().includes('偏移 (拍)'), '摇摆支持幅度、频率和偏移调节')
+    assert(swayToggle.checked && bodyText().includes('频率 (次/拍)') && bodyText().includes('偏移 (ms)'), '摇摆支持幅度、频率和偏移调节')
+    const offsetField = document.querySelector('.sway-controls input[aria-label="摇摆偏移（毫秒）"]')
+    assert(Boolean(offsetField), '摇摆偏移输入框存在')
+    offsetField.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, clientX: 100, button: 0 }))
+    await sleep(40)
+    window.dispatchEvent(new window.MouseEvent('pointermove', { bubbles: true, clientX: 140 }))
+    await sleep(40)
+    window.dispatchEvent(new window.MouseEvent('pointerup', { bubbles: true }))
+    await sleep(80)
+    assert(Number(offsetField.value) > 0, `鼠标左右拖动可调节摇摆偏移（当前 ${offsetField.value} ms）`)
     assert(document.querySelector('.multi-timeline-viewport canvas'), '启用摇摆后独立时间轴轨保持渲染')
 
     step('播放 → 时间轴时钟推进')
     const before = document.querySelector('.transport-tc').textContent
+    const playhead = document.querySelector('.timeline-playhead')
+    assert(Boolean(playhead), '播放头使用 DOM 覆盖层渲染（不重绘轨道画布）')
+    const playheadLeft = playhead.style.left
     document.querySelector('.play-btn').click()
     await sleep(1400)
     const after = document.querySelector('.transport-tc').textContent
     assert(after !== before && after !== '00:00:00', `播放头推进 ${before} → ${after}`)
+    assert(playhead.style.left !== playheadLeft, '播放时播放头随动')
     document.querySelector('.play-btn').click()
 
     await runExportFlow({ label: 'Mock', durationSeconds: 1, expectMock: true })

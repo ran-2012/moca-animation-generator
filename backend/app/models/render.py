@@ -4,7 +4,10 @@ Wire shape (all camelCase, matching the rest of MocaDiff):
 
 * ``POST /api/render`` – submit a job;
 * ``GET  /api/render/{jobId}`` – job status/progress;
-* ``GET  /api/render/{jobId}/download`` – finished artifact.
+* ``GET  /api/render/{jobId}/download`` – finished artifact;
+* ``GET  /api/render/jobs`` – export history (``RenderExportEntry``);
+* ``DELETE /api/render/{jobId}`` – delete one export;
+* ``POST /api/render/cleanup`` – bulk delete by scope.
 
 ``progress`` is a 0..1 fraction; ``doneFrames`` / ``frameCount`` give the exact
 frame counter for UIs that prefer integers.
@@ -60,7 +63,8 @@ class SwayIn(BaseModel):
     enabled: bool = False
     amplitude: float = Field(default=0.35, ge=0, le=1)
     frequency: float = Field(default=0.5, ge=0.125, le=4)
-    offset: float = Field(default=0.0, ge=-64, le=64)
+    # Phase offset in milliseconds (positive = earlier in the beat).
+    offsetMs: float = Field(default=0.0, ge=-2000, le=2000)
     bpm: float | None = Field(default=None, gt=0, le=1000)
     audioStart: float = Field(default=0.0, ge=-300, le=300)
 
@@ -99,3 +103,29 @@ class RenderJobInfo(BaseModel):
     error: str | None = None
     elapsedSec: float = 0.0
     createdAt: str = ""
+
+
+class RenderExportEntry(BaseModel):
+    """One entry of the export history (``data/renders/<jobId>/``)."""
+
+    jobId: str
+    status: JobStatus
+    format: RenderFormat
+    fps: float
+    width: int
+    height: int
+    frameCount: int
+    doneFrames: int = 0
+    fileName: str | None = None
+    fileUrl: str | None = None
+    sizeBytes: int = 0
+    createdAt: str = ""
+    finishedAt: str | None = None
+    elapsedSec: float = 0.0
+    error: str | None = None
+
+
+class RenderCleanupRequest(BaseModel):
+    """``finished`` = only done jobs, ``failed`` = failed/interrupted ones."""
+
+    scope: Literal["finished", "failed", "all"] = "finished"

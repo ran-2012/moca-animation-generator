@@ -46,6 +46,16 @@ for module_name in _ROUTER_MODULES:
 def _startup() -> None:
     config.ensure_dirs()
     (config.DATA_DIR / "tmp").mkdir(parents=True, exist_ok=True)
+    # A killed export leaves frames.zip.part behind; drop it on boot so the
+    # renders directory does not silently grow by hundreds of MB.
+    try:
+        from .services import render_service
+
+        removed = render_service.cleanup_stale_parts()
+        if removed:
+            log.info("removed %d stale render part file(s)", removed)
+    except Exception as exc:  # pragma: no cover - best effort
+        log.warning("could not clean stale render files: %s", exc)
 
 
 @app.get("/api/health")

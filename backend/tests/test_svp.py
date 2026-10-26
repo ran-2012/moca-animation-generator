@@ -135,6 +135,37 @@ def test_kana_rules_cover_yoon_sokuon_and_long_vowels():
     assert svp_service.lyric_to_plan("n", language="japanese")["main_viseme"] == "n"
 
 
+def test_multi_vowel_lyric_keeps_every_vowel():
+    """ない 在一个音符里也要先 a 后 i，而不是只取最后一个元音。"""
+    assert svp_service.lyric_to_plan("ない", language="japanese")["vowels"] == ["a", "i"]
+    assert svp_service.lyric_to_plan("な い", language="japanese")["vowels"] == ["a", "i"]
+    assert svp_service.lyric_to_plan("あい", language="japanese")["vowels"] == ["a", "i"]
+    # 长音与拨音不产生额外口型
+    assert svp_service.lyric_to_plan("きょう", language="japanese")["vowels"] == ["o"]
+    assert svp_service.lyric_to_plan("あん", language="japanese")["vowels"] == ["a"]
+
+    track = svp_service.TrackData(
+        index=0, name="t", is_instrumental=False, mixer_mute=False,
+        notes=[svp_service.NoteInfo(start_sec=0.0, end_sec=1.0, pitch_midi=60,
+                                    lyric="ない", group="g", language="japanese")])
+    events, _ = svp_service._build_events(track)
+    viseme, note_index = svp_service._paint_frames(events, 60, 60)
+    assert viseme[0] == "a" and viseme[-1] == "i", viseme
+    assert 10 < viseme.index("i") < 50
+    runs = svp_service._viseme_runs(viseme, note_index, 60)
+    assert [run["viseme"] for run in runs] == ["a", "i"], runs
+
+    # 单元素音音符保持单一嘴形
+    single = svp_service.TrackData(
+        index=0, name="t", is_instrumental=False, mixer_mute=False,
+        notes=[svp_service.NoteInfo(start_sec=0.0, end_sec=1.0, pitch_midi=60,
+                                    lyric="ま", group="g", language="japanese")])
+    single_events, _ = svp_service._build_events(single)
+    single_viseme, _ = svp_service._paint_frames(single_events, 60, 60)
+    # ま 只有闭口起势（m）+ 一个元音，没有第二个嘴形。
+    assert set(single_viseme[2:58]) == {"a"}
+
+
 # ---------------------------------------------------------------------------
 # upload
 # ---------------------------------------------------------------------------

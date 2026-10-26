@@ -67,7 +67,10 @@ backend/tests/mode_700/
 .DS_Store
 Thumbs.db
 desktop.ini
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 .idea/
 *.swp
 

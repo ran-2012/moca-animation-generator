@@ -86,11 +86,6 @@ export function AudioWave({ peaks, duration, audioDuration, start, bpm, time }: 
         })
         ctx.restore()
       }
-      if (duration > 0) {
-        const x = clamp(time / duration, 0, 1) * width
-        ctx.fillStyle = '#55a5db'
-        ctx.fillRect(x - 0.75, 0, 1.5, height)
-      }
     } else if (peaks && peaks.length > 0) {
       ctx.fillStyle = 'rgba(160, 170, 190, 0.45)'
       ctx.font = '10px system-ui, sans-serif'
@@ -104,15 +99,22 @@ export function AudioWave({ peaks, duration, audioDuration, start, bpm, time }: 
       ctx.fillText('未导入音频', width / 2, height / 2 + 3)
       ctx.textAlign = 'left'
     }
-  }, [audioDuration, bpm, duration, peaks, size, start, time])
+  }, [audioDuration, bpm, duration, peaks, size, start])
 
   useEffect(() => {
     draw()
   }, [draw])
 
+  // Playhead as a DOM cursor: the waveform itself only repaints when the data
+  // or layout changes, not 60×/s while playing.
+  const cursorPercent = duration > 0 ? clamp(time / duration, 0, 1) * 100 : null
+
   return (
     <div className="audio-wave" ref={containerRef}>
       <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+      {peaks && peaks.length > 0 && cursorPercent !== null ? (
+        <div className="audio-wave-cursor" style={{ left: `${cursorPercent}%` }} aria-hidden="true" />
+      ) : null}
     </div>
   )
 }

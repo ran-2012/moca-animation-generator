@@ -44,7 +44,7 @@ VISEME_OPENNESS = {
 }
 
 ANIMATION_MODES = {"classic", "clear", "natural", "expressive"}
-MODE_VERSION = 3
+MODE_VERSION = 4
 
 # timeline shaping (same defaults as the verified prototype)
 TAIL_SEC = 0.5
@@ -481,10 +481,30 @@ def _vowel_bearing(plan: dict) -> bool:
     return bool(final) and final[-1] in "aiueo"
 
 
+def _collect_vowels(plans: list[dict]) -> list[str]:
+    """Every vowel of the lyric, so ない sings a → i instead of just i.
+
+    长音（おう / えい）与延长的重复元音会合并成同一个口型。
+    """
+    vowels: list[str] = []
+    for plan in plans:
+        if not _vowel_bearing(plan):
+            continue
+        viseme = plan.get("main_viseme")
+        if not viseme or viseme == "closed":
+            continue
+        if vowels and vowels[-1] == viseme:
+            continue
+        vowels.append(viseme)
+    return vowels
+
+
 def _merge_syllable_plans(plans: list[dict], raw: str) -> dict:
     if len(plans) == 1:
         merged = dict(plans[0])
         merged["raw"] = raw
+        main = merged.get("main_viseme")
+        merged["vowels"] = [main] if main in ("a", "i", "u", "e", "o") else []
         return merged
     phones: list[dict] = []
     for plan in plans:
@@ -516,6 +536,7 @@ def _merge_syllable_plans(plans: list[dict], raw: str) -> dict:
         "onset_viseme": first.get("onset_viseme"),
         "main_viseme": last_vowel or first.get("main_viseme"),
         "coda_viseme": plans[-1].get("coda_viseme"),
+        "vowels": _collect_vowels(plans),
         "confidence": "rule",
     }
 
@@ -573,6 +594,24 @@ def _plan_kana(text: str) -> dict:
                     "onset_viseme": None, "main_viseme": previous_main,
                     "coda_viseme": None, "confidence": "rule",
                 })
+            continue
+        if char.isascii() and char.isalpha():
+            # 假名歌词里混进罗马字（てi / na い 这类）：整段按拼音/罗马字规则处理，
+            # 不要逐字母当成不支持字符丢掉。
+            run = ""
+            while index < len(hiragana) and hiragana[index].isascii() and hiragana[index].isalpha():
+                run += hiragana[index]
+                index += 1
+            run_plan = _plan_pinyin_syllable(run)
+            if run_plan["method"] == "unmapped":
+                run_plan = _plan_english_word(run)
+            if run_plan["method"] == "unmapped":
+                plans.append(_unmapped_plan(run, "unsupported romaji %r" % run))
+                previous_main = None
+            else:
+                run_plan["method"] = "kana_romaji"
+                plans.append(run_plan)
+                previous_main = run_plan.get("main_viseme") or previous_main
             continue
         token = hiragana[index:index + 2]
         romaji = _KANA_ROMAJI.get(token)
@@ -1028,9 +1067,17 @@ def _paint_frames(events: list[dict], n_frames: int, fps: int) -> tuple[list[str
                             or next_event["note"].start_sec > note.end_sec + 0.12)
             if phrase_final:
                 coda_len = min(CODA_FRAMES, max(0, span - consonant - 1))
-        for frame in range(f0 + consonant, f1 - coda_len):
-            viseme[frame] = main
-            note_index[frame] = event["index"]
+        vowels = plan.get("vowels") or []
+        segments = _vowel_segments(f0 + consonant, f1 - coda_len, len(vowels))
+        if segments:
+            for value, (seg_start, seg_end) in zip(vowels, segments):
+                for frame in range(seg_start, seg_end):
+                    viseme[frame] = value
+                    note_index[frame] = event["index"]
+        else:
+            for frame in range(f0 + consonant, f1 - coda_len):
+                viseme[frame] = main
+                note_index[frame] = event["index"]
         for frame in range(f1 - coda_len, f1):
             viseme[frame] = coda
             note_index[frame] = event["index"]
@@ -1051,6 +1098,21 @@ def _paint_frames(events: list[dict], n_frames: int, fps: int) -> tuple[list[str
                     viseme[frame] = viseme[index - 1]
             index = end
     return viseme, note_index
+
+
+def _vowel_segments(start: int, end: int, count: int) -> list[tuple[int, int]]:
+    """Split one note's sustain range into `count` vowel segments.
+
+    Returns an empty list when the split is not worth it (single vowel, or the
+    note is too short to give each vowel at least one frame).
+    """
+    total = end - start
+    if count < 2 or total < count:
+        return []
+    return [
+        (start + total * index // count, start + total * (index + 1) // count)
+        for index in range(count)
+    ]
 
 
 def _next_event(events: list[dict], event: dict) -> dict | None:
@@ -1100,6 +1162,17 @@ def _pitch_bounds(events: list[dict]) -> tuple[float, float]:
     return low, max(low + 1.0, high)
 
 
+def _vowel_pose(vowel: str, span: int, pitch_level: float, mode: str) -> str:
+    """Mouth pose for one vowel inside a note (same rules as the single-vowel peak)."""
+    if vowel == "a" and span >= 8 and pitch_level >= 0.75:
+        if mode == "expressive" and pitch_level >= 0.92 and span >= 12:
+            return "openXLarge"
+        return "openLarge"
+    if vowel == "a" and mode == "expressive" and span >= 8:
+        return "wide"
+    return vowel
+
+
 def _onset_pose(event: dict) -> str | None:
     phones = event["plan"].get("phones") or []
     symbols = {str(phone.get("sym") or "") for phone in phones[:-1] or phones}
@@ -1135,11 +1208,7 @@ def _pose_frames(events: list[dict], viseme: list[str], note_index: list[int], f
         onset = _onset_pose(event)
         attack = "roundSmall" if main in {"u", "o"} else ("aSoft" if main == "a" else main)
         pitch_level = max(0.0, min(1.0, (float(note.pitch_midi) - low_pitch) / (high_pitch - low_pitch)))
-        peak = main
-        if main == "a" and span >= 8 and pitch_level >= 0.75:
-            peak = "openXLarge" if mode == "expressive" and pitch_level >= 0.92 and span >= 12 else "openLarge"
-        elif main == "a" and mode == "expressive" and span >= 8:
-            peak = "wide"
+        peak = _vowel_pose(main, span, pitch_level, mode)
 
         onset_len = min(2 if strength < 1 else 3, max(0, span // 4)) if onset else 0
         attack_len = min(2, max(0, (span - onset_len) // 4))
@@ -1159,8 +1228,16 @@ def _pose_frames(events: list[dict], viseme: list[str], note_index: list[int], f
             poses[frame], phases[frame] = attack, "attack"
         cursor += attack_len
         sustain_end = max(cursor, end - release_len)
-        for frame in range(cursor, sustain_end):
-            poses[frame], phases[frame] = peak, "sustain"
+        vowels = event["plan"].get("vowels") or []
+        segments = _vowel_segments(cursor, sustain_end, len(vowels))
+        if segments:
+            for value, (seg_start, seg_end) in zip(vowels, segments):
+                pose = _vowel_pose(value, span, pitch_level, mode)
+                for frame in range(seg_start, seg_end):
+                    poses[frame], phases[frame] = pose, "sustain"
+        else:
+            for frame in range(cursor, sustain_end):
+                poses[frame], phases[frame] = peak, "sustain"
         release = attack if attack != main else main
         for frame in range(sustain_end, end):
             poses[frame], phases[frame] = release, "release"
@@ -1321,6 +1398,8 @@ def _timeline_stats(events: list[dict], viseme: list[str], note_index: list[int]
             continue
         checked += 1
         allowed = {event["main"]}
+        for value in event["plan"].get("vowels") or []:
+            allowed.add(value)
         for key in ("onset_viseme", "coda_viseme"):
             if event["plan"].get(key):
                 allowed.add(event["plan"][key])

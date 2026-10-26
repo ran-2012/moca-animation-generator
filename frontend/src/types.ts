@@ -100,6 +100,8 @@ export interface BakeManifest {
   patches: Record<string, PatchManifest>
   layers?: Record<string, StaticLayerManifest>
   zorder: string[]
+  /** Baked per-channel defaults; optional overlay channels are often `off`. */
+  defaultState?: DefaultState
   profileVersion: string
   bakedAt: string
 }
@@ -256,7 +258,8 @@ export interface SwayConfig {
   enabled: boolean
   amplitude: number
   frequency: number
-  offset: number
+  /** Phase offset in milliseconds (positive = earlier in the beat). */
+  offsetMs: number
 }
 
 export interface RenderSwayConfig extends SwayConfig {
@@ -317,6 +320,27 @@ export interface RenderJobInfo {
   elapsedSec: number
   createdAt: string
 }
+
+/** One row of the export history (`data/renders/<jobId>/`). */
+export interface RenderExportEntry {
+  jobId: string
+  status: RenderJobStatus
+  format: RenderFormat
+  fps: number
+  width: number
+  height: number
+  frameCount: number
+  doneFrames: number
+  fileName: string | null
+  fileUrl: string | null
+  sizeBytes: number
+  createdAt: string
+  finishedAt: string | null
+  elapsedSec: number
+  error: string | null
+}
+
+export type RenderCleanupScope = 'finished' | 'failed' | 'all'
 
 /** Compact workspace snapshot persisted by the backend session endpoint. */
 export interface SessionState {

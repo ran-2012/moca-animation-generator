@@ -84,6 +84,23 @@ import type {
 
 const DEFAULT_STATE = { mouth: 'closed', eyes: 'open', brow: 'neutral', cheek: 'normal' }
 
+/** True when two stage states render identically (used to keep a stable object). */
+function sameStageState(a: StageState, b: StageState): boolean {
+  if (
+    a.viseme !== b.viseme ||
+    a.mouthPose !== b.mouthPose ||
+    a.blink !== b.blink ||
+    a.brow !== b.brow ||
+    a.cheek !== b.cheek ||
+    a.openness !== b.openness
+  ) {
+    return false
+  }
+  const keysA = Object.keys(a.channels)
+  if (keysA.length !== Object.keys(b.channels).length) return false
+  return keysA.every((key) => a.channels[key] === b.channels[key])
+}
+
 const TIMELINE_FPS = 60
 
 // Layout ------------------------------------------------------------------
@@ -1432,6 +1449,7 @@ export default function App() {
   }, [seek, togglePlay])
 
   // derived stage state -----------------------------------------------------
+  const stageStateRef = useRef<StageState | null>(null)
   const stageState = useMemo<StageState>(
     () => {
       const channels = Object.fromEntries(
@@ -1440,7 +1458,7 @@ export default function App() {
           .map(([channel, events]) => [channel, eventStateAt(events, time)])
           .filter((entry): entry is [string, string] => Boolean(entry[1])),
       )
-      return {
+      const next: StageState = {
         viseme: (timeline ? visemeAt(timeline.frames, time, defaultState.mouth as Viseme) : defaultState.mouth) as Viseme,
         mouthPose: timeline ? mouthPoseAt(timeline.frames, time) : undefined,
         blink: isBlinkActive(blinks, time),
@@ -1449,6 +1467,12 @@ export default function App() {
         openness: timeline ? opennessAt(timeline.frames, time) : 0,
         channels,
       }
+      // Playback re-renders 60×/s; keep the previous object while the pose is
+      // unchanged so the stage can skip repainting and rebuilding draw lists.
+      const previous = stageStateRef.current
+      if (previous && sameStageState(previous, next)) return previous
+      stageStateRef.current = next
+      return next
     },
     [blinks, defaultState, time, timeline],
   )

@@ -14,6 +14,8 @@ import type {
   ProjectSummary,
   PsdUploadInfo,
   RenderFormat,
+  RenderCleanupScope,
+  RenderExportEntry,
   RenderJobInfo,
   RenderJobStatus,
   RenderRequestPayload,
@@ -232,6 +234,7 @@ function normalizeManifest(input: BakeManifest | null, assetId: string): BakeMan
     patches: input.patches && typeof input.patches === 'object' ? input.patches : {},
     layers: input.layers && typeof input.layers === 'object' ? input.layers : undefined,
     zorder: Array.isArray(input.zorder) && input.zorder.length > 0 ? input.zorder.map(String) : ['cheek', 'mouth', 'eyes', 'brow'],
+    defaultState: input.defaultState && typeof input.defaultState === 'object' ? input.defaultState : undefined,
     profileVersion: String(input.profileVersion ?? ''),
     bakedAt: String(input.bakedAt ?? ''),
   }
@@ -503,7 +506,60 @@ export async function getRenderJob(jobId: string): Promise<RenderJobInfo> {
   if (!raw) throw new ApiError('导出任务状态为空')
   return normalizeRenderJob(raw, jobId)
 }
+function normalizeExportEntry(raw: RenderExportEntry): RenderExportEntry {
+  const formats: RenderFormat[] = ['png_zip', 'prores4444', 'webm_alpha', 'mp4']
+  const statuses: RenderJobStatus[] = ['queued', 'running', 'done', 'failed']
+  return {
+    jobId: String(raw.jobId ?? ''),
+    status: statuses.includes(raw.status) ? raw.status : 'failed',
+    format: formats.includes(raw.format) ? raw.format : 'png_zip',
+    fps: asNumber(raw.fps, 24),
+    width: asNumber(raw.width),
+    height: asNumber(raw.height),
+    frameCount: asNumber(raw.frameCount),
+    doneFrames: asNumber(raw.doneFrames),
+    fileName: raw.fileName ? String(raw.fileName) : null,
+    fileUrl: raw.fileUrl ? String(raw.fileUrl) : null,
+    sizeBytes: asNumber(raw.sizeBytes),
+    createdAt: String(raw.createdAt ?? ''),
+    finishedAt: raw.finishedAt ? String(raw.finishedAt) : null,
+    elapsedSec: asNumber(raw.elapsedSec),
+    error: raw.error ? String(raw.error) : null,
+  }
+}
 
+export async function listRenderExports(limit = 100): Promise<RenderExportEntry[]> {
+  if (mockEnabled) {
+    const raw = await callMock(() => mock.listRenderExports())
+    return raw.map(normalizeExportEntry)
+  }
+  const raw = await request<{ jobs: RenderExportEntry[] }>(`/api/render/jobs?limit=${limit}`)
+  return Array.isArray(raw?.jobs) ? raw.jobs.map(normalizeExportEntry) : []
+}
+
+export async function deleteRenderExport(jobId: string): Promise<number> {
+  if (mockEnabled) {
+    return callMock(() => mock.deleteRenderExport(jobId))
+  }
+  const raw = await request<{ freedBytes?: number }>(
+    `/api/render/${encodeURIComponent(jobId)}`,
+    { method: 'DELETE' },
+  )
+  return asNumber(raw?.freedBytes)
+}
+
+export async function cleanupRenderExports(
+  scope: RenderCleanupScope,
+): Promise<{ removed: number; freedBytes: number }> {
+  if (mockEnabled) {
+    return callMock(() => mock.cleanupRenderExports(scope))
+  }
+  const raw = await request<{ removed?: number; freedBytes?: number }>(
+    '/api/render/cleanup',
+    jsonInit({ scope }),
+  )
+  return { removed: asNumber(raw?.removed), freedBytes: asNumber(raw?.freedBytes) }
+}
 // ---------------------------------------------------------------------------
 // session persistence (always hits the real backend, even in mock data mode)
 // ---------------------------------------------------------------------------

@@ -299,3 +299,13 @@ export function IconFolder(props: Props) {
     </svg>
   )
 }
+
+export function IconTrash(props: Props) {
+  return (
+    <svg {...svgProps(props)}>
+      <path d="M4 7h16M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
+      <path d="M6.5 7l.8 12A1.5 1.5 0 0 0 8.8 20.5h6.4a1.5 1.5 0 0 0 1.5-1.5l.8-12" />
+      <path d="M10.5 11v6M13.5 11v6" />
+    </svg>
+  )
+}

@@ -1,6 +1,7 @@
 import type { AudioSummary, SwayConfig } from '../types'
 import { formatDuration } from '../lib/format'
 import { AudioWave } from './AudioWave'
+import { DragNumber } from './DragNumber'
 import { IconClock, IconMusic, IconSave, IconSpinner } from './Icons'
 
 interface AudioPanelProps {
@@ -187,15 +188,16 @@ export function AudioPanel({
               />
             </label>
             <label className="field">
-              <span>偏移 (拍)</span>
-              <input
-                className="mini-input number"
-                type="number"
-                min="-64"
-                max="64"
-                step="0.125"
-                value={sway.offset}
-                onChange={(event) => onSway({ ...sway, offset: Number(event.target.value) || 0 })}
+              <span>偏移 (ms)</span>
+              <DragNumber
+                value={sway.offsetMs}
+                onChange={(value) => onSway({ ...sway, offsetMs: value })}
+                step={1}
+                min={-2000}
+                max={2000}
+                precision={0}
+                ariaLabel="摇摆偏移（毫秒）"
+                title="摇摆相位偏移（毫秒），左右拖动调节、单击直接输入；Shift 拖动更精细，Ctrl 拖动更快"
               />
             </label>
           </div>

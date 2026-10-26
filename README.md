@@ -14,9 +14,10 @@
 | PSD 上传 / 图层树 / 多方案语义映射 / 烘焙 | ✅ 已完成（扩展口型、眼睛、眉毛、脸颊、汗、眼部效果；bake 缓存） |
 | SVP 单轨模式化口型 + 多轨时间轴 | ✅ 已完成（classic / clear / natural / expressive；音符、音素、音高、口型、眨眼等独立轨道） |
 | 音频波形 / BPM / 音频起点（可负） | ✅ 已完成（BPM 自动检测 + 手填兜底；支持从负时间开始） |
-| 随节奏立绘摇摆 | ✅ 已完成（左右轻摆 + 纵向轻微拉伸；幅度、频率、节拍偏移可调；独立轨道） |
+| 随节奏立绘摇摆 | ✅ 已完成（左右轻摆 + 纵向轻微拉伸；幅度、频率、毫秒级相位偏移可调；独立轨道） |
 | React 单页 UI（导入 / 图层映射 / 舞台 / 多轨时间轴 / 音频同步） | ✅ 已完成（纵向滚动、轨高切换、分组折叠、LIVE/MOCK 切换） |
 | 透明导出：PNG 序列 / ProRes 4444 / WebM alpha / MP4 | ✅ 已完成（与预览共用 mouthPose 和动画轨状态降级规则） |
+| 导出记录管理 | ✅ 已完成（导出面板内列出历史导出，可下载 / 单条删除 / 批量清理） |
 | 刷新恢复工作区（Session 持久化） | ✅ 已完成（保存 Mapping Set、动画模式、时间轴视图及分模式快照） |
 | 打开历史项目 | ✅ 已完成（顶栏「打开项目」，按素材组合自动记录，最多 50 条） |
 | 图层自由调整 | ✅ 已完成（非语义图层烘焙后仍可即时显隐；自动驱动图层冻结；组内互斥） |
@@ -65,6 +66,20 @@ cd frontend
 npm run dev
 ```
 
+### VS Code 运行/调试
+
+仓库自带 `.vscode/launch.json` 和 `.vscode/tasks.json`，打开仓库根目录后按 `F5` 选择：
+
+| 配置 | 作用 |
+|---|---|
+| `Full stack (API + UI)` | 起后端 8787（debugpy）+ Vite 5173，并打开 Chrome，可同时断前/后端 |
+| `Backend: API (uvicorn 8787)` | 只调后端（`--reload` 版本另有一项，带 `subProcess` 支持） |
+| `Backend: pytest (current file / all)` | 用 debugpy 跑测试 |
+| `Frontend: Chrome / Edge (5173)` | 只调前端，会自动先执行 `frontend: vite dev` 任务 |
+| `Frontend: smoke (jsdom)` | 直接调试 jsdom 冒烟脚本 |
+
+`Terminal → Run Task` 还可单独运行 `backend: uvicorn`、`frontend: vite dev`、`backend: tests`、`frontend: build`、`frontend: smoke`、`dev: start.ps1`。任务已把 `npm_config_cache` 指到仓库内 `.npm-cache/`。注意 `.vscode/` 整体被忽略，只放行这三个配置文件。
+
 ### 生产构建（单端口 8787）
 
 ```powershell
@@ -78,9 +93,9 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 
 1. 导入 `moca.psd` → 自动识别口型 / 眼睛 / 眉毛 / 脸颊 / 汗 / 眼部效果 → 确认 Mapping Set → 烘焙纹理；烘焙后仍可在图层树中即时切换装饰/备选图层，带锁的自动图层不可手改，组内可开启「互斥」实现单选切换；
 2. 导入 `流沙.svp` → 选择一条人声轨道和 `classic / clear / natural / expressive` 模式 → 生成音符、音素、音高与动画轨；
-3. 导入音频 → 波形 / BPM / **音频起点（可负）** → 拖动波形或用「对齐播放头」/ ±0.1s 微调 → 可启用“随节奏摇摆”并调整幅度、每拍频率和节拍偏移 → 播放同步预览；预览舞台支持拖拽平移、光标锚定滚轮缩放和双击复位；时间轴支持独立摇摆轨、纵向滚动、轨高切换、分组折叠、`Ctrl+滚轮` 缩放和 `Shift+滚轮` 平移；
+3. 导入音频 → 波形 / BPM / **音频起点（可负）** → 拖动波形或用「对齐播放头」/ ±0.1s 微调 → 可启用“随节奏摇摆”并调整幅度、每拍频率和毫秒偏移（输入框可鼠标左右拖动调节，单击可直接输入） → 播放同步预览；预览舞台支持拖拽平移、光标锚定滚轮缩放和双击复位；时间轴支持独立摇摆轨、纵向滚动、轨高切换、分组折叠、`Ctrl+滚轮` 缩放和 `Shift+滚轮` 平移；
 4. （可选）配置 DeepSeek / OpenRouter Key → AI 歌词分析 / Jev 选层建议（后端接口已就绪，UI 面板下一阶段）；
-5. 导出 PNG 序列 / ProRes 4444 / WebM alpha / MP4 → 在 FilmCraft 等软件中合成背景视频。
+5. 导出 PNG 序列 / ProRes 4444 / WebM alpha / MP4 → 在 FilmCraft 等软件中合成背景视频；导出面板底部「历史导出」可查看 `data/renders/` 里的所有成品，支持下载、单条删除和批量清理（已完成 / 失败 / 全部）。
 
 ### 导出格式与 FilmCraft 兼容性
 
@@ -98,6 +113,10 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 - WebM VP9 alpha 在本工具导出为 `alpha_mode=1`（ffprobe 可见），适合网页/预览，不一定所有 NLE 支持。
 
 > 导出后端实测：1080×1524 PNG 序列 2s@24fps 48 帧 2.66s（约 28MB）；ProRes 4444 1s 0.63s，`pix_fmt=yuva444p12le`、`profile=4444`；WebM VP9 `alpha_mode=1`；MP4 H.264 正常。
+>
+> PNG 序列逐帧「合成 + 编码」在线程池里并发（默认用满**全部 CPU 核心**，`MOCADIFF_RENDER_WORKERS` 可覆盖；设为 `1` 退回单线程）。1080p、开启摇摆的 96 帧导出：单线程 25.5s → 现在 ~3.2s（同机 32 核）；关闭摇摆时因为表情状态缓存，96 帧 <1s。
+>
+> 视频格式（ProRes 4444 / WebM / MP4）同样并发合成帧，再按顺序写入 ffmpeg 管道：1080p + 摇摆的 48 帧 ProRes 从 5.9s 降到 ~2.9s。
 > 实际渲染帧预览**不随仓库分发**（角色素材版权限制）；本地运行导出后查看 `data/renders/`，或运行 `python scripts/render_smoke.py`。
 
 ### AI：DeepSeek 与 Jev

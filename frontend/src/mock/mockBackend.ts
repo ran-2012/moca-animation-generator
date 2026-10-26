@@ -11,8 +11,11 @@ import type {
   MappingProfile,
   PeaksResult,
   PsdUploadInfo,
+  RenderCleanupScope,
+  RenderExportEntry,
   RenderFormat,
   RenderJobInfo,
+  RenderJobStatus,
   RenderRequestPayload,
   SvpUploadInfo,
   Timeline,
@@ -808,4 +811,58 @@ export async function getRenderJob(jobId: string): Promise<RenderJobInfo> {
 
 export function renderFileExtension(format: RenderFormat): string {
   return RENDER_FORMAT_EXT[format] ?? 'bin'
+}
+
+export async function listRenderExports(): Promise<RenderExportEntry[]> {
+  await delay(120)
+  const entries: RenderExportEntry[] = []
+  for (const [jobId, record] of renderJobs) {
+    const info = record.info
+    const status: RenderJobStatus = info.fileUrl ? 'done' : info.status
+    entries.push({
+      jobId,
+      status: status === 'queued' || status === 'running' ? 'failed' : status,
+      format: info.format,
+      fps: info.fps,
+      width: info.width,
+      height: info.height,
+      frameCount: info.frameCount,
+      doneFrames: info.doneFrames,
+      fileName: info.fileName,
+      fileUrl: info.fileUrl,
+      sizeBytes: info.fileUrl ? Math.round(info.width * info.height * 0.35) : 0,
+      createdAt: info.createdAt,
+      finishedAt: info.fileUrl ? new Date(record.startedAt + record.totalMs).toISOString() : null,
+      elapsedSec: info.elapsedSec,
+      error: info.error,
+    })
+  }
+  entries.sort((a, b) => (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt))
+  return entries
+}
+
+export async function deleteRenderExport(jobId: string): Promise<number> {
+  await delay(80)
+  const record = renderJobs.get(jobId)
+  if (!record) throw renderError('导出记录不存在（mock）。', 404)
+  const freed = record.info.fileUrl ? Math.round(record.info.width * record.info.height * 0.35) : 0
+  renderJobs.delete(jobId)
+  return freed
+}
+
+export async function cleanupRenderExports(
+  scope: RenderCleanupScope,
+): Promise<{ removed: number; freedBytes: number }> {
+  await delay(120)
+  let removed = 0
+  let freedBytes = 0
+  for (const [jobId, record] of [...renderJobs]) {
+    const done = Boolean(record.info.fileUrl)
+    if (scope === 'finished' && !done) continue
+    if (scope === 'failed' && done) continue
+    freedBytes += done ? Math.round(record.info.width * record.info.height * 0.35) : 0
+    renderJobs.delete(jobId)
+    removed += 1
+  }
+  return { removed, freedBytes }
 }

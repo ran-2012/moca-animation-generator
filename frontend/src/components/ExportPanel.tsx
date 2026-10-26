@@ -1,7 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ApiError, getRenderJob, submitRender } from '../api'
-import type { Blink, RenderFormat, RenderJobInfo, RenderRequestPayload, SwayConfig, Timeline, ToastMessage } from '../types'
-import { clamp, formatDuration, formatTimecode } from '../lib/format'
+import {
+  ApiError,
+  cleanupRenderExports,
+  deleteRenderExport,
+  getRenderJob,
+  listRenderExports,
+  submitRender,
+} from '../api'
+import type {
+  Blink,
+  RenderCleanupScope,
+  RenderExportEntry,
+  RenderFormat,
+  RenderJobInfo,
+  RenderRequestPayload,
+  SwayConfig,
+  Timeline,
+  ToastMessage,
+} from '../types'
+import { clamp, formatBytes, formatDuration, formatTime, formatTimecode } from '../lib/format'
 import {
   EXPORT_BROW_STATES,
   EXPORT_CHEEK_STATES,
@@ -12,7 +29,15 @@ import {
   exportHeight,
   getRenderFormat,
 } from '../lib/export'
-import { IconAlert, IconCheck, IconDownload, IconSpinner, IconX } from './Icons'
+import {
+  IconAlert,
+  IconCheck,
+  IconDownload,
+  IconRefresh,
+  IconSpinner,
+  IconTrash,
+  IconX,
+} from './Icons'
 
 type RangeMode = 'head' | 'full' | 'custom'
 
@@ -38,6 +63,13 @@ interface ExportPanelProps {
 }
 
 const POLL_INTERVAL_MS = 600
+
+const EXPORT_STATUS_LABELS: Record<string, string> = {
+  done: '完成',
+  failed: '失败',
+  running: '渲染中',
+  queued: '排队中',
+}
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -81,6 +113,11 @@ export function ExportPanel({
   const [job, setJob] = useState<RenderJobInfo | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [history, setHistory] = useState<RenderExportEntry[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyBusy, setHistoryBusy] = useState(false)
+  const [cleanupBusy, setCleanupBusy] = useState(false)
+  const [cleanupTarget, setCleanupTarget] = useState<RenderCleanupScope | null>(null)
 
   useEffect(() => {
     setBrow('')
@@ -207,6 +244,67 @@ export function ExportPanel({
     setJob(null)
     setError(null)
   }
+
+  // export history: list / download / delete / clean -------------------------
+  const refreshHistory = useCallback(async () => {
+    setHistoryBusy(true)
+    try {
+      setHistory(await listRenderExports(60))
+    } catch {
+      // backend offline (or mock without jobs): keep the previous list
+    } finally {
+      setHistoryBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    void refreshHistory()
+  }, [open, refreshHistory])
+
+  useEffect(() => {
+    if (job?.status === 'done') void refreshHistory()
+  }, [job?.status, refreshHistory])
+
+  const handleDeleteExport = useCallback(
+    async (targetId: string) => {
+      try {
+        const freed = await deleteRenderExport(targetId)
+        setHistory((current) => current.filter((item) => item.jobId !== targetId))
+        setJob((current) => (current?.jobId === targetId ? null : current))
+        onNotify('info', `已删除导出记录${freed > 0 ? `（释放 ${formatBytes(freed)}）` : ''}`)
+      } catch (deleteError) {
+        onNotify('error', `删除导出失败：${describeError(deleteError)}`)
+      }
+    },
+    [onNotify],
+  )
+
+  const runCleanup = useCallback(
+    async (scope: RenderCleanupScope) => {
+      setCleanupTarget(null)
+      setCleanupBusy(true)
+      try {
+        const result = await cleanupRenderExports(scope)
+        await refreshHistory()
+        setJob(null)
+        onNotify(
+          'info',
+          `已清理 ${result.removed} 项导出${result.freedBytes > 0 ? `（释放 ${formatBytes(result.freedBytes)}）` : ''}`,
+        )
+      } catch (cleanupError) {
+        onNotify('error', `清理导出失败：${describeError(cleanupError)}`)
+      } finally {
+        setCleanupBusy(false)
+      }
+    },
+    [onNotify, refreshHistory],
+  )
+
+  const historyBytes = useMemo(
+    () => history.reduce((total, item) => total + Math.max(0, item.sizeBytes), 0),
+    [history],
+  )
 
   const progressPercent = job ? Math.round(Math.min(1, Math.max(0, job.progress)) * 100) : 0
 
@@ -529,6 +627,131 @@ export function ExportPanel({
               </div>
             </div>
           ) : null}
+
+          <section className="export-section export-history">
+            <div className="export-section-head">
+              <span>历史导出</span>
+              <em>
+                {history.length > 0
+                  ? `${history.length} 项 · 占用 ${formatBytes(historyBytes)}`
+                  : '暂无导出记录'}
+              </em>
+              <div className="export-history-head-actions">
+                <button
+                  className="mini-btn"
+                  onClick={() => void refreshHistory()}
+                  disabled={historyBusy}
+                  title="刷新导出记录"
+                >
+                  {historyBusy ? <IconSpinner size={12} /> : <IconRefresh size={12} />}
+                </button>
+                <button
+                  className="mini-btn"
+                  onClick={() => setHistoryOpen((value) => !value)}
+                  data-testid="export-history-toggle"
+                >
+                  {historyOpen ? '收起' : '展开'}
+                </button>
+              </div>
+            </div>
+
+            {historyOpen ? (
+              <>
+                <div className="export-history-bulk">
+                  {cleanupTarget ? (
+                    <span className="export-history-confirm">
+                      确认删除
+                      {cleanupTarget === 'finished' ? '全部已完成' : cleanupTarget === 'failed' ? '全部失败' : '全部'}导出？
+                      <button
+                        className="mini-btn danger"
+                        onClick={() => void runCleanup(cleanupTarget)}
+                        data-testid="export-cleanup-confirm"
+                      >
+                        确认
+                      </button>
+                      <button className="mini-btn" onClick={() => setCleanupTarget(null)}>
+                        取消
+                      </button>
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        className="mini-btn"
+                        onClick={() => setCleanupTarget('finished')}
+                        disabled={cleanupBusy || history.length === 0}
+                      >
+                        清理已完成
+                      </button>
+                      <button
+                        className="mini-btn"
+                        onClick={() => setCleanupTarget('failed')}
+                        disabled={cleanupBusy || history.length === 0}
+                      >
+                        清理失败
+                      </button>
+                      <button
+                        className="mini-btn danger"
+                        onClick={() => setCleanupTarget('all')}
+                        disabled={cleanupBusy || history.length === 0}
+                        data-testid="export-cleanup-all"
+                      >
+                        全部清理
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {history.length === 0 ? (
+                  <p className="export-note">
+                    还没有导出记录。完成的导出保存在本机 <code>data/renders/</code>，可以在这里下载或清理。
+                  </p>
+                ) : (
+                  <div className="export-history-list">
+                    {history.map((entry) => (
+                      <div className="export-history-row" key={entry.jobId} data-testid="export-history-row">
+                        <span className={`export-history-status ${entry.status}`}>
+                          {EXPORT_STATUS_LABELS[entry.status] ?? entry.status}
+                        </span>
+                        <div className="export-history-main">
+                          <strong title={entry.fileName ?? entry.jobId}>
+                            {entry.fileName ?? entry.jobId}
+                          </strong>
+                          <span>
+                            {getRenderFormat(entry.format).ext} · {entry.width}×{entry.height} ·{' '}
+                            {entry.frameCount} 帧 · {formatBytes(entry.sizeBytes)} ·{' '}
+                            {formatTime(entry.finishedAt ?? entry.createdAt)}
+                          </span>
+                          {entry.error ? <em className="export-history-error">{entry.error}</em> : null}
+                        </div>
+                        <div className="export-history-row-actions">
+                          {entry.fileUrl ? (
+                            <a
+                              className="mini-btn"
+                              href={entry.fileUrl}
+                              download={entry.fileName ?? undefined}
+                              data-testid="export-history-download"
+                            >
+                              <IconDownload size={12} />
+                              下载
+                            </a>
+                          ) : null}
+                          <button
+                            className="mini-btn danger"
+                            onClick={() => void handleDeleteExport(entry.jobId)}
+                            title="删除该导出文件与记录"
+                            data-testid="export-history-delete"
+                          >
+                            <IconTrash size={12} />
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : null}
+          </section>
         </div>
 
         <footer className="modal-foot">

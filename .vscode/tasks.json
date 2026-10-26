@@ -1,0 +1,93 @@
+{
+  // Tasks used by launch.json (preLaunchTask) and by "Terminal → Run Task".
+  // The npm cache must stay inside the repo: the sandbox blocks %LOCALAPPDATA%.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "backend: uvicorn",
+      "detail": "FastAPI on 127.0.0.1:8787 (reload)",
+      "type": "shell",
+      "command": "python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 --reload",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "uvicorn",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Started server process",
+          "endsPattern": "Uvicorn running on"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "frontend: vite dev",
+      "detail": "Vite dev server on 127.0.0.1:5173 with /api + /media proxy",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "env": { "npm_config_cache": "${workspaceFolder}/.npm-cache" }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE v",
+          "endsPattern": "ready in"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      "label": "backend: tests",
+      "detail": "pytest via run_tests.ps1 (uses backend/vendor when present)",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ./run_tests.ps1",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "frontend: build",
+      "detail": "tsc -b + vite build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "env": { "npm_config_cache": "${workspaceFolder}/.npm-cache" }
+      },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "frontend: smoke",
+      "detail": "jsdom smoke test (no real browser)",
+      "type": "shell",
+      "command": "npm run smoke",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "env": { "npm_config_cache": "${workspaceFolder}/.npm-cache" }
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "dev: start.ps1 (backend + frontend)",
+      "detail": "Same as .\\start.ps1, in one terminal",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ./start.ps1",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "mocadiff",
+        "pattern": { "regexp": "^$" },
+        "background": { "activeOnStart": true, "beginsPattern": ".", "endsPattern": "Press Ctrl\\+C to stop both servers" }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    }
+  ]
+}

@@ -156,7 +156,7 @@ moca-diff/
 ### 渲染 / AI
 
 - 导出格式：PNG 序列（RGBA）、ProRes 4444、WebM VP9 alpha、MP4 H.264。
-- 上限：300 秒 / 6000 帧；前端与后端都校验。
+- PNG 序列的逐帧「合成 + PNG 编码」在线程池里并发执行（默认**全部 CPU 核心**，`MOCADIFF_RENDER_WORKERS` 可覆盖），帧仍按序号顺序写入 zip；视频格式同样并发合成、再按顺序喂给 ffmpeg 管道；`FrameSource.compose_state()` 返回的是**共享缓存图像**，调用方只能读，不能原地修改。
 - AI 后端使用标准库 `urllib`（本机 httpx/openai 不可用）；无 Key 时必须降级到规则结果，返回 200 + warnings，不能阻断主流程。
 - Key 只存本地 `data/settings.json`，接口只返回 `hasKey`，不要回传明文 Key。
 
@@ -197,6 +197,7 @@ moca-diff/
 - 新增 API 必须补 Pydantic response model（或明确的 dict 契约）并更新 CONTRACT。
 - 测试不要删除用户的 `data/session.json`；`tests/test_session.py` 会备份/恢复 Session 文件，保持这个习惯。
 - 渲染任务有 `job.json` 持久化；前端轮询任务状态，不要改成同步阻塞请求。
+- 导出产物在 `data/renders/<jobId>/`，**不做自动保留期限**；导出面板提供 `GET /api/render/jobs`、`DELETE /api/render/{id}`、`POST /api/render/cleanup` 的列表/删除/清理，启动时会清掉残留 `*.part`。改这部分时保持“读 job.json 即可恢复列表”的策略，不要改成只存内存。
 
 ---
 

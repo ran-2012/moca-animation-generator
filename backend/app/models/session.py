@@ -17,7 +17,8 @@ class SessionSway(BaseModel):
     enabled: bool = False
     amplitude: float = Field(default=0.35, ge=0, le=1)
     frequency: float = Field(default=0.5, ge=0.125, le=4)
-    offset: float = Field(default=0.0, ge=-64, le=64)
+    # Phase offset in milliseconds (positive = earlier in the beat).
+    offsetMs: float = Field(default=0.0, ge=-2000, le=2000)
 
 
 class SessionState(BaseModel):

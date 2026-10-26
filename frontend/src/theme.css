@@ -1085,6 +1085,17 @@ body[data-resizing] .split-handle::after {
   border: 1px solid #383838;
   border-radius: 0;
   background: #1e1e1e;
+  position: relative;
+}
+
+.audio-wave-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  margin-left: -0.75px;
+  background: #55a5db;
+  pointer-events: none;
 }
 
 .audio-controls {
@@ -1216,6 +1227,7 @@ body[data-resizing] .split-handle::after {
 
 .multi-timeline {
   background: #1e1e1e;
+  position: relative;
 }
 
 .segmented {
@@ -1241,6 +1253,31 @@ body[data-resizing] .split-handle::after {
 
 .multi-timeline-viewport {
   cursor: crosshair;
+  position: relative;
+}
+
+/* DOM playhead: moved with `left` every frame instead of repainting the
+   tracks canvas. */
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: #55a5db;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.timeline-playhead-marker {
+  position: absolute;
+  top: 17px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid #55a5db;
+  transform: translateX(-5px);
+  pointer-events: none;
+  z-index: 4;
 }
 
 .timeline-legend {
@@ -1522,12 +1559,144 @@ body[data-resizing] .split-handle::after {
   border-radius: 2px;
 }
 
+/* export history (list / download / clean) -------------------------------- */
+
+.export-history .export-section-head {
+  align-items: center;
+  gap: 8px;
+}
+
+.export-history-head-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.export-history-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 0 4px;
+}
+
+.export-history-confirm {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 10.5px;
+  color: #d7ba7d;
+}
+
+.export-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.export-history-row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  border: 1px solid #383838;
+  border-radius: 2px;
+  background: #252526;
+}
+
+.export-history-row:hover {
+  border-color: #0e639c;
+  background: #2a2d2e;
+}
+
+.export-history-status {
+  padding: 1px 0;
+  border-radius: 2px;
+  text-align: center;
+  font-size: 9.5px;
+  color: #cfcfcf;
+  background: #3a3a3a;
+}
+
+.export-history-status.done {
+  background: #123a1a;
+  color: #7ec699;
+}
+
+.export-history-status.failed {
+  background: #3f1b1b;
+  color: #e08c8c;
+}
+
+.export-history-status.running,
+.export-history-status.queued {
+  background: #1b3350;
+  color: #7cb7ef;
+}
+
+.export-history-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.export-history-main strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e7e7e7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-history-main span {
+  font-size: 9.5px;
+  color: #9a9a9a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-history-error {
+  font-size: 9.5px;
+  color: #e08c8c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-history-row-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.export-history-row-actions .mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  text-decoration: none;
+}
+
+.mini-btn.danger {
+  color: #e08c8c;
+  border-color: #5a2b2b;
+}
+
+.mini-btn.danger:hover:not(:disabled) {
+  background: #3f1b1b;
+  border-color: #8b3a3a;
+}
+
 .modal-foot .btn {
   height: 28px;
 }
 
 /* project history ---------------------------------------------------------- */
-
 .project-modal {
   width: min(680px, 94vw);
 }

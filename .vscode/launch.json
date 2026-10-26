@@ -1,0 +1,107 @@
+{
+  // MocaDiff run/debug configurations.
+  // Backend: FastAPI + uvicorn on 127.0.0.1:8787 (cwd = backend/, so `app.main:app` resolves).
+  // Frontend: Vite dev server on 127.0.0.1:5173, proxying /api + /media to the backend.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend: API (uvicorn 8787)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--host", "127.0.0.1", "--port", "8787"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Backend: API (uvicorn --reload)",
+      // --reload spawns a worker process; keep subProcess enabled so breakpoints hit.
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--host", "127.0.0.1", "--port", "8787", "--reload"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": true
+    },
+    {
+      "name": "Backend: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Backend: pytest (current file)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${relativeFile}", "-q"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": { "PYTHONPATH": "${workspaceFolder}/backend" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Backend: pytest (all)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests", "-q"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": { "PYTHONPATH": "${workspaceFolder}/backend" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Starts the Vite dev server first (task), then opens the app.
+      "name": "Frontend: Chrome (5173)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/frontend",
+      "preLaunchTask": "frontend: vite dev",
+      "sourceMaps": true,
+      "smartStep": true
+    },
+    {
+      "name": "Frontend: Edge (5173)",
+      "type": "pwa-msedge",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/frontend",
+      "preLaunchTask": "frontend: vite dev",
+      "sourceMaps": true,
+      "smartStep": true
+    },
+    {
+      // jsdom smoke run without a real browser (see AGENTS.md §6).
+      "name": "Frontend: smoke (jsdom)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/frontend/scripts/dom-smoke.mjs",
+      "runtimeArgs": ["--require", "./scripts/child-process-shim.cjs"],
+      "cwd": "${workspaceFolder}/frontend",
+      "console": "integratedTerminal",
+      "env": { "npm_config_cache": "${workspaceFolder}/.npm-cache" }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full stack (API + UI)",
+      "configurations": ["Backend: API (uvicorn 8787)", "Frontend: Chrome (5173)"],
+      "stopAll": true,
+      "presentation": { "group": "0-fullstack", "order": 1 }
+    },
+    {
+      "name": "Full stack (API --reload + UI)",
+      "configurations": ["Backend: API (uvicorn --reload)", "Frontend: Edge (5173)"],
+      "stopAll": true,
+      "presentation": { "group": "0-fullstack", "order": 2 }
+    }
+  ]
+}

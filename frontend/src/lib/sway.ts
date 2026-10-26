@@ -4,7 +4,7 @@ export const DEFAULT_SWAY: SwayConfig = {
   enabled: false,
   amplitude: 0.35,
   frequency: 0.5,
-  offset: 0,
+  offsetMs: 0,
 }
 
 export function normalizeSway(value?: Partial<SwayConfig> | null): SwayConfig {
@@ -16,7 +16,7 @@ export function normalizeSway(value?: Partial<SwayConfig> | null): SwayConfig {
     enabled: Boolean(value?.enabled),
     amplitude: Math.max(0, Math.min(1, number(value?.amplitude, DEFAULT_SWAY.amplitude))),
     frequency: Math.max(0.125, Math.min(4, number(value?.frequency, DEFAULT_SWAY.frequency))),
-    offset: Math.max(-64, Math.min(64, number(value?.offset, DEFAULT_SWAY.offset))),
+    offsetMs: Math.max(-2000, Math.min(2000, Math.round(number(value?.offsetMs, DEFAULT_SWAY.offsetMs)))),
   }
 }
 
@@ -29,8 +29,9 @@ export function swayTransform(time: number, bpm: number | null, config: SwayConf
   if (!normalized.enabled || !bpm || bpm <= 0 || normalized.amplitude <= 0) {
     return { angle: 0, scaleY: 1 }
   }
-  const beat = (time - audioStart) * bpm / 60
-  const phase = Math.PI * 2 * ((beat + normalized.offset) * normalized.frequency)
+  // 偏移用毫秒：正值表示摇摆相位提前。
+  const beat = (time - audioStart + normalized.offsetMs / 1000) * bpm / 60
+  const phase = Math.PI * 2 * (beat * normalized.frequency)
   const strength = normalized.amplitude
   return {
     angle: (Math.PI / 180) * 4 * strength * Math.sin(phase),
@@ -43,7 +44,7 @@ export function swayEvents(duration: number, bpm: number | null, config: SwayCon
   if (!normalized.enabled || !bpm || bpm <= 0 || duration <= 0) return []
   const beat = 60 / bpm
   const step = beat / normalized.frequency
-  let first = audioStart - normalized.offset * beat
+  let first = audioStart - normalized.offsetMs / 1000
   while (first < 0) first += step
   const events = []
   for (let t = first; t <= duration; t += step) {

@@ -336,6 +336,125 @@ def test_png_zip_export_with_real_manifest(server: dict) -> None:
         assert low == 0 and high == 255, (low, high)
 
 
+def test_png_zip_workers_do_not_change_frames(server: dict, monkeypatch) -> None:
+    """The parallel frame pipeline must produce byte-identical archives."""
+    assets = render_service.prepare_assets(server["assetId"], 320)
+    timeline = _timeline(0.5)
+    archives: list[list[bytes]] = []
+    for workers in (1, 4):
+        monkeypatch.setattr(config, "RENDER_WORKERS", workers)
+        source = render_service.FrameSource(timeline, [], assets)
+        out = server["root"] / f"workers-{workers}.zip"
+        render_service._render_png_zip("r_workercheck0", source, 0.0, 12.0, 8, out)
+        with zipfile.ZipFile(out) as archive:
+            assert archive.namelist() == [f"frame_{index:04d}.png" for index in range(8)]
+            archives.append([archive.read(name) for name in archive.namelist()])
+    assert archives[0] == archives[1]
+
+    # Sway makes every frame unique, so the same in-order numbering must hold.
+    monkeypatch.setattr(config, "RENDER_WORKERS", 4)
+    swayed = render_service.FrameSource(
+        timeline, [], assets,
+        sway={"enabled": True, "amplitude": 0.5, "frequency": 0.5, "offsetMs": 0, "bpm": 120},
+    )
+    out = server["root"] / "workers-sway.zip"
+    render_service._render_png_zip("r_workercheck1", swayed, 0.0, 12.0, 6, out)
+    with zipfile.ZipFile(out) as archive:
+        names = archive.namelist()
+        frames = [archive.read(name) for name in names]
+    assert names == [f"frame_{index:04d}.png" for index in range(6)]
+    assert len(set(frames)) > 1
+
+
+def test_png_worker_count_is_clamped(monkeypatch) -> None:
+    import os
+
+    monkeypatch.setattr(config, "RENDER_WORKERS", 0)
+    # Default: every CPU core, but never more workers than frames.
+    assert render_service._frame_workers(6000) == max(1, os.cpu_count() or 1)
+    assert render_service._frame_workers(1) == 1
+    monkeypatch.setattr(config, "RENDER_WORKERS", 1)
+    assert render_service._frame_workers(6000) == 1
+    monkeypatch.setattr(config, "RENDER_WORKERS", 64)
+    assert render_service._frame_workers(3) == 3
+
+
+def test_export_history_list_delete_and_cleanup(server: dict) -> None:
+    """GET /api/render/jobs · DELETE /api/render/{id} · POST /api/render/cleanup."""
+    payload = {
+        "psdAssetId": server["assetId"],
+        "timeline": _timeline(0.5),
+        "startSec": 0.0,
+        "durationSec": 0.5,
+        "outFps": 12,
+        "width": 320,
+        "format": "png_zip",
+    }
+    status, raw, _ = _http("POST", "/api/render", payload)
+    assert status == 200, raw[:400]
+    job_id = _json(raw)["jobId"]
+    job = _wait_for(job_id, timeout=120)
+    assert job["status"] == "done", job.get("error")
+
+    status, raw, _ = _http("GET", "/api/render/jobs")
+    assert status == 200, raw[:200]
+    entries = _json(raw)["jobs"]
+    entry = next(item for item in entries if item["jobId"] == job_id)
+    assert entry["status"] == "done"
+    assert entry["sizeBytes"] > 0
+    assert entry["fileUrl"] == f"/api/render/{job_id}/download"
+    assert entry["fileName"] == "frames.zip"
+    assert entry["frameCount"] == 6
+
+    status, raw, _ = _http("DELETE", f"/api/render/{job_id}")
+    assert status == 200, raw[:200]
+    assert _json(raw)["ok"] is True
+    assert _http("GET", f"/api/render/{job_id}")[0] == 404
+    assert _http("GET", f"/api/render/{job_id}/download")[0] == 404
+    listing = {item["jobId"] for item in _json(_http("GET", "/api/render/jobs")[1])["jobs"]}
+    assert job_id not in listing
+
+    # Bulk cleanup wipes whatever other tests left behind.
+    status, raw, _ = _http("POST", "/api/render/cleanup", {"scope": "all"})
+    assert status == 200, raw[:200]
+    result = _json(raw)
+    assert result["ok"] is True
+    assert result["removed"] >= 0
+    assert _json(_http("GET", "/api/render/jobs")[1])["jobs"] == []
+    # unknown scope is rejected
+    assert _http("POST", "/api/render/cleanup", {"scope": "nonsense"})[0] == 422
+
+
+def test_optional_overlay_channels_stay_off_by_default(server: dict) -> None:
+    """Preview must match export: no sweat / tears unless a track asks for them.
+
+    Regression: an optional channel whose manifest default was ``off`` used to
+    fall back to ``sorted(states)[0]`` (``double`` / ``cry``), so the export drew
+    sweat and tears that the preview never showed.
+    """
+    assets = render_service.prepare_assets(server["assetId"], 320)
+    if not any(key.startswith("sweat.") for key in assets.patches):
+        pytest.skip("烘焙 manifest 没有 sweat 通道")
+    raw_default = (server["manifest"].get("defaultState") or {}).get("sweat")
+    if raw_default == "off":
+        assert assets.default_state.get("sweat") == "off"
+        plain = render_service.FrameSource({"frames": []}, [], assets)
+        state = plain.state_at(1.0)
+        assert "sweat" not in state and "eyeEffect" not in state
+
+    with_events = render_service.FrameSource(
+        {"frames": [], "tracks": {
+            "sweat": [{"t": 0.0, "state": "single"}],
+            "eyeEffect": [{"t": 0.0, "state": "tear"}],
+        }},
+        [],
+        assets,
+    )
+    resolved = with_events.state_at(1.0)
+    assert resolved.get("sweat") == "sweat.single"
+    assert resolved.get("eyeEffect") == "eyeEffect.tear"
+
+
 def test_render_validation_errors(server: dict) -> None:
     base_payload = {
         "psdAssetId": server["assetId"],
@@ -501,12 +620,12 @@ def test_video_formats(server: dict, fmt: str, suffix: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _tiny_assets() -> render_service.PreparedAssets:
+def _tiny_assets(width: int = 10, height: int = 10) -> render_service.PreparedAssets:
     transparent = Image.new("RGBA", (2, 2), (0, 0, 0, 255))
     return render_service.PreparedAssets(
-        width=10,
-        height=10,
-        base=Image.new("RGBA", (10, 10), (0, 0, 0, 0)),
+        width=width,
+        height=height,
+        base=Image.new("RGBA", (width, height), (0, 0, 0, 0)),
         patches={
             "mouth.closed": (transparent, (0, 0)),
             "mouth.a": (Image.new("RGBA", (2, 2), (255, 0, 0, 255)), (0, 0)),
@@ -517,8 +636,8 @@ def _tiny_assets() -> render_service.PreparedAssets:
         },
         zorder=["mouth", "eyes", "sweat"],
         default_state={"mouth": "closed", "eyes": "open", "sweat": "off"},
-        source_width=10,
-        source_height=10,
+        source_width=width,
+        source_height=height,
     )
 
 
@@ -606,7 +725,7 @@ def test_frame_source_applies_beat_sway_without_changing_canvas_size() -> None:
         timeline,
         [],
         assets,
-        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offset": 0, "bpm": 120},
+        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offsetMs": 0, "bpm": 120},
     )
 
     assert disabled.compose(0.25).tobytes() == disabled.compose_state(disabled.state_at(0.25)).tobytes()
@@ -614,16 +733,41 @@ def test_frame_source_applies_beat_sway_without_changing_canvas_size() -> None:
     assert moved.size == (10, 10)
     assert moved.tobytes() != enabled.compose_state(enabled.state_at(0.25)).tobytes()
 
-    edge_assets = _tiny_assets()
-    edge_assets.base = Image.new("RGBA", (10, 10), (255, 255, 255, 255))
+    # The 6% safety margin must keep the whole artboard inside the canvas: the
+    # rotated frame may shrink but must never be clipped at the borders.
+    edge_assets = _tiny_assets(width=200, height=200)
+    edge_assets.base = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
     edge_source = render_service.FrameSource(
         timeline,
         [],
         edge_assets,
-        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offset": 0, "bpm": 120},
+        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offsetMs": 0, "bpm": 120},
     )
     edge_frame = edge_source.compose(0.25)
-    assert edge_frame.getbbox() == (0, 0, 10, 10)
+    assert edge_frame.size == (200, 200)
+    left, top, right, bottom = edge_frame.getbbox()
+    assert 0 <= left and 0 <= top and right <= 200 and bottom <= 200, (left, top, right, bottom)
+    opaque = sum(1 for value in edge_frame.getchannel("A").getdata() if value > 0)
+    # 0.88² ≈ 77% of the canvas after the safety shrink; no clipping means the
+    # opaque area still covers the vast majority of the artboard.
+    assert opaque > 200 * 200 * 0.7, opaque
+
+
+def test_sway_offset_ms_shifts_phase() -> None:
+    """250ms at 120 BPM = half a beat: same pose as 0.25s later without offset."""
+    assets = _tiny_assets()
+    assets.base.putpixel((2, 2), (255, 255, 255, 255))
+    timeline = {"frames": [{"t": 0.0, "viseme": "closed"}]}
+    base = render_service.FrameSource(
+        timeline, [], assets,
+        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offsetMs": 0, "bpm": 120},
+    )
+    shifted = render_service.FrameSource(
+        timeline, [], assets,
+        sway={"enabled": True, "amplitude": 1, "frequency": 0.5, "offsetMs": 250, "bpm": 120},
+    )
+    assert shifted.compose(0.0).tobytes() == base.compose(0.25).tobytes()
+    assert shifted.compose(0.0).tobytes() != base.compose(0.0).tobytes()
 
 
 def test_frame_source_composes_static_layers_in_z_order() -> None:

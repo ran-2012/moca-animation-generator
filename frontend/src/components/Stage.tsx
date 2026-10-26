@@ -46,6 +46,16 @@ interface Point {
   y: number
 }
 
+interface Drawable {
+  key: string
+  image: HTMLImageElement
+  x: number
+  y: number
+  width: number
+  height: number
+  z: number
+}
+
 const CHECKER_LIGHT = '#292929'
 const CHECKER_DARK = '#242424'
 
@@ -87,6 +97,10 @@ export function Stage({
   const [panning, setPanning] = useState(false)
   const panDragRef = useRef<{ x: number; y: number; pan: Point } | null>(null)
   const [checker, setChecker] = useState(true)
+  // Last painted visual state, so a paused/unchanged frame is not repainted.
+  const lastDrawRef = useRef('')
+  // base + drop shadow pre-rendered once per size, instead of blurring every frame.
+  const spriteRef = useRef<{ key: string; canvas: HTMLCanvasElement; pad: number } | null>(null)
 
   // keep the canvas backing store in sync with the layout box
   useEffect(() => {
@@ -204,12 +218,127 @@ export function Stage({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
+  // Everything that gets drawn on top of the base image: semantic patches plus
+  // the static (non-semantic) layers, already merged and z-sorted. Rebuilding
+  // this list on every animation frame was pure garbage churn.
+  const drawables = useMemo<Drawable[]>(() => {
+    if (!manifest || !imagesReady) return []
+    const images = imagesRef.current
+    const channelValue: Record<string, string> = {
+      ...state.channels,
+      eyes: state.blink ? 'blink' : state.channels.eyes,
+      brow: state.brow,
+      cheek: state.cheek,
+    }
+    const fallback: Record<string, string | undefined> = {
+      ...(manifest.defaultState ?? {}),
+      // Live profile defaults win for the core channels, so the preview keeps
+      // following the mapping panel while optional channels (sweat / eyeEffect)
+      // use the baked default (usually "off"), exactly like the exporter.
+      mouth: defaultState.mouth,
+      eyes: defaultState.eyes,
+      brow: defaultState.brow,
+      cheek: defaultState.cheek,
+    }
+
+    const order = manifest.zorder.length > 0 ? manifest.zorder : ['cheek', 'mouth', 'eyes', 'brow']
+    const items: Drawable[] = []
+    order.forEach((channel, index) => {
+      const wanted = channel === 'mouth' ? [state.mouthPose, state.viseme] : [channelValue[channel]]
+      if (wanted[0] === 'off') return
+      const values = [...wanted, fallback[channel]].filter((value): value is string => Boolean(value))
+      const patchKey = values.map((value) => `${channel}.${value}`).find((key) => manifest.patches[key])
+      if (!patchKey) return
+      const patch = manifest.patches[patchKey]
+      const image = images.get(patchKey)
+      if (!patch || !image || image.naturalWidth === 0) return
+      items.push({
+        key: patchKey,
+        image,
+        x: patch.offset[0],
+        y: patch.offset[1],
+        width: patch.width || image.naturalWidth,
+        height: patch.height || image.naturalHeight,
+        z: patch.z ?? 1_000_000 + index,
+      })
+    })
+
+    for (const [id, layer] of Object.entries(manifest.layers ?? {})) {
+      if (hiddenLayers.has(id)) continue
+      const image = images.get(`layer:${id}`)
+      if (!image || image.naturalWidth === 0) continue
+      items.push({
+        key: `layer:${id}`,
+        image,
+        x: layer.offset[0],
+        y: layer.offset[1],
+        width: layer.width || image.naturalWidth,
+        height: layer.height || image.naturalHeight,
+        z: layer.z,
+      })
+    }
+    items.sort((a, b) => a.z - b.z)
+    return items
+  }, [defaultState, hiddenLayers, imagesReady, manifest, state])
+
+  const hiddenKey = useMemo(() => Array.from(hiddenLayers).sort().join(','), [hiddenLayers])
+  const channelsKey = useMemo(() => JSON.stringify(state.channels), [state.channels])
+
+  // base + drop shadow pre-rendered once per size; a 32px shadow blur on every
+  // frame was the most expensive single call in the preview path.
+  const baseSprite = useCallback(
+    (base: HTMLImageElement, width: number, height: number, dpr: number) => {
+      const key = `${manifest?.bakedAt ?? ''}|${width.toFixed(1)}|${height.toFixed(1)}|${dpr}`
+      const cached = spriteRef.current
+      if (cached && cached.key === key) return cached
+      const pad = 40
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.ceil((width + pad * 2) * dpr))
+      canvas.height = Math.max(1, Math.ceil((height + pad * 2) * dpr))
+      const spriteCtx = canvas.getContext('2d')
+      if (!spriteCtx) return null
+      spriteCtx.scale(dpr, dpr)
+      spriteCtx.shadowColor = 'rgba(0, 0, 0, 0.55)'
+      spriteCtx.shadowBlur = 32
+      spriteCtx.shadowOffsetY = 12
+      spriteCtx.drawImage(base, pad, pad, width, height)
+      spriteRef.current = { key, canvas, pad }
+      return spriteRef.current
+    },
+    [manifest?.bakedAt],
+  )
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas || size.width === 0) return
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
     const width = size.width
     const height = size.height
+    const motion = swayTransform(time, bpm, sway, audioStart)
+
+    // Nothing visible changed (paused, sway off, ...): skip the repaint.
+    const signature = [
+      manifest?.bakedAt ?? '',
+      imagesVersion,
+      zoom,
+      Math.round(pan.x * 4) / 4,
+      Math.round(pan.y * 4) / 4,
+      width,
+      height,
+      checker ? 1 : 0,
+      state.viseme,
+      state.mouthPose ?? '',
+      state.blink ? 1 : 0,
+      state.brow,
+      state.cheek,
+      channelsKey,
+      hiddenKey,
+      motion.angle.toFixed(6),
+      motion.scaleY.toFixed(6),
+    ].join('|')
+    if (signature === lastDrawRef.current) return
+    lastDrawRef.current = signature
+
     if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
       canvas.width = Math.floor(width * dpr)
       canvas.height = Math.floor(height * dpr)
@@ -262,7 +391,6 @@ export function Stage({
     ctx.lineWidth = 1
     ctx.strokeRect(offsetX + 0.5, offsetY + 0.5, imageWidth - 1, imageHeight - 1)
 
-    const motion = swayTransform(time, bpm, sway, audioStart)
     const pivotX = offsetX + imageWidth / 2
     const pivotY = offsetY + imageHeight
 
@@ -272,81 +400,29 @@ export function Stage({
     ctx.scale(1, motion.scaleY)
     ctx.translate(-pivotX, -pivotY)
 
-    // subtle drop shadow so the cut-out reads against the checkerboard
-    ctx.save()
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)'
-    ctx.shadowBlur = 32
-    ctx.shadowOffsetY = 12
-    ctx.drawImage(base, offsetX, offsetY, manifest.width * scale, manifest.height * scale)
-    ctx.restore()
-
-    const channelValue: Record<string, string> = {
-      ...state.channels,
-      eyes: state.blink ? 'blink' : state.channels.eyes,
-      brow: state.brow,
-      cheek: state.cheek,
-    }
-    const fallback: Record<string, string> = {
-      mouth: defaultState.mouth,
-      eyes: defaultState.eyes,
-      brow: defaultState.brow,
-      cheek: defaultState.cheek,
-    }
-
-    const order = manifest.zorder.length > 0 ? manifest.zorder : ['cheek', 'mouth', 'eyes', 'brow']
-    const patches: Array<{ z: number; image: HTMLImageElement; offset: [number, number]; width: number; height: number }> = []
-    order.forEach((channel, index) => {
-      const wanted = channel === 'mouth' ? [state.mouthPose, state.viseme] : [channelValue[channel]]
-      if (wanted[0] === 'off') return
-      const values = [...wanted, fallback[channel]].filter((value): value is string => Boolean(value))
-      const patchKey = values.map((value) => `${channel}.${value}`).find((key) => manifest.patches[key])
-      if (!patchKey) return
-      const patch = manifest.patches[patchKey]
-      const image = imagesRef.current.get(patchKey)
-      if (!patch || !image || image.naturalWidth === 0) return
-      patches.push({
-        z: patch.z ?? 1_000_000 + index,
-        image,
-        offset: patch.offset,
-        width: patch.width || image.naturalWidth,
-        height: patch.height || image.naturalHeight,
-      })
-    })
-
-    if (manifest.layers) {
-      const drawables = [...patches]
-      for (const [id, layer] of Object.entries(manifest.layers)) {
-        if (hiddenLayers.has(id)) continue
-        const image = imagesRef.current.get(`layer:${id}`)
-        if (!image || image.naturalWidth === 0) continue
-        drawables.push({
-          z: layer.z,
-          image,
-          offset: layer.offset,
-          width: layer.width || image.naturalWidth,
-          height: layer.height || image.naturalHeight,
-        })
-      }
-      drawables.sort((a, b) => a.z - b.z)
-      for (const item of drawables) {
-        ctx.drawImage(
-          item.image,
-          offsetX + item.offset[0] * scale,
-          offsetY + item.offset[1] * scale,
-          item.width * scale,
-          item.height * scale,
-        )
-      }
+    // subtle drop shadow so the cut-out reads against the checkerboard —
+    // blurred once into an offscreen sprite instead of 60×/s.
+    const sprite = baseSprite(base, imageWidth, imageHeight, dpr)
+    if (sprite) {
+      ctx.drawImage(
+        sprite.canvas,
+        offsetX - sprite.pad,
+        offsetY - sprite.pad,
+        sprite.canvas.width / dpr,
+        sprite.canvas.height / dpr,
+      )
     } else {
-      for (const patch of patches) {
-        ctx.drawImage(
-          patch.image,
-          offsetX + patch.offset[0] * scale,
-          offsetY + patch.offset[1] * scale,
-          patch.width * scale,
-          patch.height * scale,
-        )
-      }
+      ctx.drawImage(base, offsetX, offsetY, imageWidth, imageHeight)
+    }
+
+    for (const item of drawables) {
+      ctx.drawImage(
+        item.image,
+        offsetX + item.x * scale,
+        offsetY + item.y * scale,
+        item.width * scale,
+        item.height * scale,
+      )
     }
     ctx.restore()
 
@@ -367,7 +443,7 @@ export function Stage({
       ctx.lineTo(cx, cy + dy * corner)
       ctx.stroke()
     }
-  }, [audioStart, bpm, checker, defaultState, hiddenLayers, imagesReady, manifest, pan, size, state, sway, time, zoom])
+  }, [audioStart, baseSprite, bpm, channelsKey, checker, drawables, hiddenKey, imagesVersion, manifest, pan, size, state, sway, time, zoom])
 
   useEffect(() => {
     draw()

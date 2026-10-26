@@ -6,6 +6,7 @@ importable and defines every filesystem root used by the API.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,19 @@ ALLOWED_ORIGINS = [
 ]
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Frames of a PNG export are composed + encoded on this many threads; 0 = auto
+# (all CPU cores).  Set MOCADIFF_RENDER_WORKERS=1 to force the old
+# single-threaded path (useful when comparing timings).
+RENDER_WORKERS = _int_env("MOCADIFF_RENDER_WORKERS", 0)
 
 # Asset kinds and their sub-directories under data/assets.
 ASSET_KINDS = ("psd", "svp", "audio")

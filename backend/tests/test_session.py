@@ -48,7 +48,7 @@ def test_session_roundtrip_and_clear():
             audio={"assetId": "aud123", "durationSec": 242.6},
             bpm=76.0,
             offset=0.25,
-            sway={"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offset": 0.25},
+            sway={"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offsetMs": 250},
             manifestStale=True,
         )
         saved_at = session_service.save(state)
@@ -66,7 +66,7 @@ def test_session_roundtrip_and_clear():
         assert loaded.bpm == 76.0
         assert loaded.offset == 0.25
         assert loaded.sway is not None
-        assert loaded.sway.model_dump() == {"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offset": 0.25}
+        assert loaded.sway.model_dump() == {"enabled": True, "amplitude": 0.4, "frequency": 0.5, "offsetMs": 250}
         assert loaded.manifestStale is True
         assert loaded.hiddenGroups == ["0.3.1"]
         assert loaded.exclusiveGroups == ["3"]

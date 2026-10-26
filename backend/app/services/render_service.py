@@ -11,14 +11,17 @@ Consumes the one-time PSD bake (`base.png` + per-state patch PNGs +
 Design notes
 ------------
 * Jobs are queued and executed by **one** daemon worker thread, so two
-  exports never fight over CPU / ffmpeg pipes.
+  exports never fight over CPU / ffmpeg pipes.  Inside one PNG job the frames
+  are composed + PNG-encoded on a thread pool (``MOCADIFF_RENDER_WORKERS``,
+  default: every CPU core) and written to the archive in order.
 * Every job lives in ``data/renders/<jobId>/`` with a ``job.json`` so
   ``GET /api/render/{id}`` still answers after a page reload (a process
   restart marks unfinished jobs as failed instead of hanging).
 * Frames are composed by overlaying the manifest patches on a copy of the
   cached base; psd-tools is never touched here.  Identical expression states
-  are memoised (bounded byte cache), which is what makes a 10 s / 1080p PNG
-  export take seconds instead of minutes.
+  are memoised on two levels (the composed RGBA frame and the encoded PNG
+  bytes, both bounded), which is what makes a 10 s / 1080p PNG export take
+  seconds instead of minutes.
 * All raster sizes are forced even: ProRes/H.264/VP9 reject odd dimensions
   on some builds.
 * Media URLs from the manifest are resolved strictly below
@@ -40,7 +43,8 @@ import threading
 import time
 import uuid
 import zipfile
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +63,9 @@ MIN_WIDTH = 200
 MAX_WIDTH = 2480
 MAX_OUT_FPS = 60.0
 PNG_CACHE_BYTES = 96 * 1024 * 1024
+# Composed pre-sway frames kept in memory (reused while a viseme/expression
+# combination repeats, which is most of a song).
+STATE_CACHE_BYTES = 192 * 1024 * 1024
 
 DEFAULT_ZORDER = ["cheek", "mouth", "eyes", "brow"]
 DEFAULT_STATE = {"mouth": "closed", "eyes": "open", "brow": "neutral", "cheek": "normal"}
@@ -314,8 +321,18 @@ def prepare_assets(psd_asset_id: str, out_width: int) -> PreparedAssets:
         if not states:
             continue
         candidate = str(raw_defaults.get(channel) or "")
+        if candidate == "off":
+            # Optional overlay channel (sweat / eyeEffect ...) explicitly off.
+            default_state[channel] = "off"
+            continue
         if candidate not in states:
             preferred = DEFAULT_STATE.get(channel)
+            if preferred is None:
+                # No core default and no manifest hint: stay off.  Picking an
+                # arbitrary state here is what made exports show sweat / tears
+                # that the preview never drew.
+                default_state[channel] = "off"
+                continue
             candidate = preferred if preferred in states else sorted(states)[0]
         default_state[channel] = candidate
 
@@ -428,9 +445,14 @@ class FrameSource:
         self.sway_enabled = bool(sway.get("enabled")) and float(sway.get("bpm") or 0) > 0
         self.sway_amplitude = max(0.0, min(1.0, float(sway.get("amplitude") or 0.0)))
         self.sway_frequency = max(0.125, min(4.0, float(sway.get("frequency") or 0.5)))
-        self.sway_offset = max(-64.0, min(64.0, float(sway.get("offset") or 0.0)))
+        self.sway_offset_ms = max(-2000.0, min(2000.0, float(sway.get("offsetMs") or 0.0)))
         self.sway_bpm = max(0.0, float(sway.get("bpm") or 0.0))
         self.sway_audio_start = max(-300.0, min(300.0, float(sway.get("audioStart") or 0.0)))
+        # Composed (pre-sway) frames are deterministic per state, so 10s of
+        # "closed" or one held viseme only composes once.  Bounded by bytes.
+        self._state_cache: "OrderedDict[tuple[tuple[str, str], ...], Image.Image]" = OrderedDict()
+        self._state_cache_bytes = 0
+        self._state_cache_lock = threading.Lock()
 
     # -- canvas --------------------------------------------------------
     @property
@@ -494,7 +516,33 @@ class FrameSource:
         return state
 
     # -- composition ---------------------------------------------------
+    def _cached_state(self, key: tuple[tuple[str, str], ...]) -> Image.Image | None:
+        with self._state_cache_lock:
+            cached = self._state_cache.get(key)
+            if cached is not None:
+                self._state_cache.move_to_end(key)
+            return cached
+
+    def _store_state(self, key: tuple[tuple[str, str], ...], frame: Image.Image) -> None:
+        size = frame.size[0] * frame.size[1] * 4
+        if size > STATE_CACHE_BYTES // 2:
+            return  # single frame already eats half the budget: not worth caching
+        with self._state_cache_lock:
+            if key in self._state_cache:
+                return
+            self._state_cache[key] = frame
+            self._state_cache_bytes += size
+            while self._state_cache_bytes > STATE_CACHE_BYTES and len(self._state_cache) > 1:
+                _, stale = self._state_cache.popitem(last=False)
+                self._state_cache_bytes -= stale.size[0] * stale.size[1] * 4
+
     def compose_state(self, state: Mapping[str, str]) -> Image.Image:
+        """Compose the patches for one state.  Returned images are cache-shared:
+        callers must treat them as read-only."""
+        cache_key = tuple(sorted(state.items()))
+        cached = self._cached_state(cache_key)
+        if cached is not None:
+            return cached
         frame = self.assets.base.copy()
         drawables: list[tuple[int, Image.Image, tuple[int, int]]] = []
         for layer_id, entry in self.assets.layers.items():
@@ -514,38 +562,62 @@ class FrameSource:
         drawables.sort(key=lambda item: item[0])
         for _, layer, position in drawables:
             _alpha_paste(frame, layer, position)
+        self._store_state(cache_key, frame)
         return frame
 
     def compose(self, t: float) -> Image.Image:
         frame = self.compose_state(self.state_at(t))
         if not self.sway_enabled or self.sway_amplitude <= 0:
             return frame
+        width, height = frame.size
         safe_scale = 1.0 - 0.12 * self.sway_amplitude
-        safe_size = (
-            max(1, round(self.width * safe_scale)),
-            max(1, round(self.height * safe_scale)),
-        )
-        scaled = frame.resize(safe_size, Image.Resampling.LANCZOS)
-        safe_frame = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-        safe_x = (self.width - safe_size[0]) // 2
-        safe_y = (self.height - safe_size[1]) // 2
-        safe_frame.alpha_composite(scaled, (safe_x, safe_y))
-        beat = (t - self.sway_audio_start) * self.sway_bpm / 60.0
-        phase = math.tau * ((beat + self.sway_offset) * self.sway_frequency)
+        safe_w = max(1, round(width * safe_scale))
+        safe_h = max(1, round(height * safe_scale))
+        safe_x = (width - safe_w) // 2
+        safe_y = (height - safe_h) // 2
+        beat = (t - self.sway_audio_start + self.sway_offset_ms / 1000.0) * self.sway_bpm / 60.0
+        phase = math.tau * (beat * self.sway_frequency)
         angle = math.radians(4.0) * self.sway_amplitude * math.sin(phase)
         scale_y = 1.0 + 0.02 * self.sway_amplitude * math.cos(phase * 2.0)
         cosine, sine = math.cos(angle), math.sin(angle)
-        pivot_x, pivot_y = self.width / 2.0, float(safe_y + safe_size[1])
-        inverse = (
-            cosine,
-            sine,
-            pivot_x - cosine * pivot_x - sine * pivot_y,
-            -sine / scale_y,
-            cosine / scale_y,
-            pivot_y + sine * pivot_x / scale_y - cosine * pivot_y / scale_y,
+
+        # Two steps in one affine transform: shrink into the safety margin and
+        # then rotate + stretch about the bottom-centre pivot.  Doing the shrink
+        # as a separate LANCZOS resize cost about half of every exported frame.
+        pivot_x, pivot_y = width / 2.0, float(safe_y + safe_h)
+        step_x = safe_w / float(width)
+        step_y = safe_h / float(height)
+        a = cosine * step_x
+        b = -sine * scale_y * step_y
+        d = sine * step_x
+        e = cosine * scale_y * step_y
+        # q = (safe_x, safe_y) + S*p   (scaled image pasted at the safe offset)
+        # F(p) = P + M*(q - P)        (rotate + stretch about the pivot)
+        offset_x = (
+            pivot_x
+            + cosine * (safe_x - pivot_x)
+            - sine * scale_y * (safe_y - pivot_y)
         )
-        return safe_frame.transform(
-            safe_frame.size,
+        offset_y = (
+            pivot_y
+            + sine * (safe_x - pivot_x)
+            + cosine * scale_y * (safe_y - pivot_y)
+        )
+        det = a * e - b * d
+        if abs(det) < 1e-12:  # pragma: no cover - degenerate parameters
+            return frame
+        inv_a, inv_b = e / det, -b / det
+        inv_d, inv_e = -d / det, a / det
+        inverse = (
+            inv_a,
+            inv_b,
+            -(inv_a * offset_x + inv_b * offset_y),
+            inv_d,
+            inv_e,
+            -(inv_d * offset_x + inv_e * offset_y),
+        )
+        return frame.transform(
+            frame.size,
             Image.Transform.AFFINE,
             inverse,
             resample=Image.Resampling.BICUBIC,
@@ -719,35 +791,76 @@ def _tail(path: Path, lines: int = 3) -> str:
     return " | ".join(parts[-lines:])[:800] or "未知错误"
 
 
+def _frame_workers(frame_count: int) -> int:
+    """Threads used to compose + encode frames (all cores by default)."""
+    configured = int(getattr(config, "RENDER_WORKERS", 0) or 0)
+    cpu = os.cpu_count() or 2
+    workers = configured if configured > 0 else cpu
+    return max(1, min(workers, max(1, frame_count)))
+
+
 def _render_png_zip(job_id: str, source: FrameSource, start: float, fps: float,
                     frame_count: int, out_path: Path) -> None:
     temp_path = out_path.with_name(out_path.name + ".part")
     cache: "OrderedDict[tuple[tuple[str, str], ...], bytes]" = OrderedDict()
+    cache_lock = threading.Lock()
     cache_bytes = 0
     digits = max(4, len(str(max(0, frame_count - 1))))
+    workers = _frame_workers(frame_count)
+    log.info("png_zip %s: %d frames on %d worker(s)", job_id, frame_count, workers)
+
+    def encode(t: float, state: dict[str, str], key: tuple[tuple[str, str], ...]) -> bytes:
+        """Compose one frame and encode it as PNG (runs on a worker thread)."""
+        nonlocal cache_bytes
+        with cache_lock:
+            cached = cache.get(key)
+            if cached is not None:
+                cache.move_to_end(key)
+                return cached
+        image = source.compose(t) if source.sway_enabled else source.compose_state(state)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG", compress_level=3)
+        data = buffer.getvalue()
+        with cache_lock:
+            if key not in cache:
+                cache[key] = data
+                cache_bytes += len(data)
+                while cache_bytes > PNG_CACHE_BYTES and len(cache) > 1:
+                    _, stale = cache.popitem(last=False)
+                    cache_bytes -= len(stale)
+        return data
+
     try:
         with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED,
-                             allowZip64=True) as archive:
+                             allowZip64=True) as archive, ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="mocadiff-png") as pool:
+            # Compose ahead in parallel, write the archive strictly in order so
+            # frame numbering and progress stay monotonic.  The window is capped
+            # because every in-flight frame holds a full-size PNG in memory.
+            window = max(2, min(workers + 2, 32))
+            pending: "deque[tuple[int, Future[bytes]]]" = deque()
+            submitted = 0
+            previous_key: tuple[tuple[str, str], ...] | None = None
+            previous_future: Future[bytes] | None = None
             for index in range(frame_count):
-                t = start + index / fps
-                state = source.state_at(t)
-                key = (tuple(sorted(state.items())), index if source.sway_enabled else -1)
-                data = cache.get(key)
-                if data is None:
-                    image = source.compose(t) if source.sway_enabled else source.compose_state(state)
-                    buffer = io.BytesIO()
-                    image.save(buffer, format="PNG", compress_level=3)
-                    data = buffer.getvalue()
-                    cache[key] = data
-                    cache_bytes += len(data)
-                    while cache_bytes > PNG_CACHE_BYTES and len(cache) > 1:
-                        _, stale = cache.popitem(last=False)
-                        cache_bytes -= len(stale)
-                else:
-                    cache.move_to_end(key)
-                archive.writestr(f"frame_{index:0{digits}d}.png", data)
-                _set_job(job_id, doneFrames=index + 1,
-                         progress=min(0.99, (index + 1) / frame_count))
+                while submitted < frame_count and len(pending) < window:
+                    t = start + submitted / fps
+                    state = source.state_at(t)
+                    key = (tuple(sorted(state.items())),
+                           submitted if source.sway_enabled else -1)
+                    # Runs of identical pose reuse one task instead of queueing
+                    # the same PNG over and over.
+                    if key == previous_key and previous_future is not None:
+                        future = previous_future
+                    else:
+                        future = pool.submit(encode, t, state, key)
+                    previous_key, previous_future = key, future
+                    pending.append((submitted, future))
+                    submitted += 1
+                frame_index, future = pending.popleft()
+                archive.writestr(f"frame_{frame_index:0{digits}d}.png", future.result())
+                _set_job(job_id, doneFrames=frame_index + 1,
+                         progress=min(0.99, (frame_index + 1) / frame_count))
                 _persist(job_id)
         os.replace(temp_path, out_path)
     finally:
@@ -760,6 +873,18 @@ def _render_png_zip(job_id: str, source: FrameSource, start: float, fps: float,
 def _encode_video(job_id: str, source: FrameSource, start: float, fps: float,
                   frame_count: int, fmt: str, out_path: Path,
                   background: tuple[int, int, int]) -> None:
+    workers = _frame_workers(frame_count)
+    log.info("%s %s: %d frames on %d worker(s)", fmt, job_id, frame_count, workers)
+
+    def encode_frame(t: float, state: Mapping[str, str]) -> bytes:
+        """Compose one frame into raw bytes (runs on a worker thread)."""
+        image = source.compose(t) if source.sway_enabled else source.compose_state(state)
+        if fmt == "mp4":
+            canvas = Image.new("RGB", image.size, background)
+            canvas.paste(image, (0, 0), image)
+            return canvas.tobytes()
+        return image.tobytes()
+
     with open(job_dir(job_id) / "ffmpeg.log", "wb") as stderr_file:
         process = subprocess.Popen(
             build_ffmpeg_command(fmt, source.width, source.height, fps, out_path),
@@ -770,32 +895,38 @@ def _encode_video(job_id: str, source: FrameSource, start: float, fps: float,
         )
         assert process.stdin is not None
         written = 0
-        last_key: tuple[tuple[str, str], ...] | None = None
-        last_chunk: bytes | None = None
+        window = max(2, min(workers + 2, 32))
+        pending: "deque[tuple[int, Future[bytes]]]" = deque()
+        submitted = 0
+        previous_key: tuple[tuple[str, str], ...] | None = None
+        previous_future: Future[bytes] | None = None
         try:
-            for index in range(frame_count):
-                t = start + index / fps
-                state = source.state_at(t)
-                key = (tuple(sorted(state.items())), index if source.sway_enabled else -1)
-                if key == last_key and last_chunk is not None:
-                    chunk = last_chunk
-                else:
-                    image = source.compose(t) if source.sway_enabled else source.compose_state(state)
-                    if fmt == "mp4":
-                        canvas = Image.new("RGB", image.size, background)
-                        canvas.paste(image, (0, 0), image)
-                        chunk = canvas.tobytes()
-                    else:
-                        chunk = image.tobytes()
-                    last_key, last_chunk = key, chunk
-                try:
-                    process.stdin.write(chunk)
-                except (BrokenPipeError, OSError):
-                    break
-                written = index + 1
-                _set_job(job_id, doneFrames=written,
-                         progress=min(0.99, written / frame_count))
-                _persist(job_id)
+            with ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="mocadiff-video") as pool:
+                # Compose frames in parallel but feed ffmpeg strictly in order:
+                # the pipe is sequential, the expensive part is not.
+                while written < frame_count:
+                    while submitted < frame_count and len(pending) < window:
+                        t = start + submitted / fps
+                        state = source.state_at(t)
+                        key = (tuple(sorted(state.items())),
+                               submitted if source.sway_enabled else -1)
+                        if key == previous_key and previous_future is not None:
+                            future = previous_future
+                        else:
+                            future = pool.submit(encode_frame, t, state)
+                        previous_key, previous_future = key, future
+                        pending.append((submitted, future))
+                        submitted += 1
+                    index, future = pending.popleft()
+                    try:
+                        process.stdin.write(future.result())
+                    except (BrokenPipeError, OSError):
+                        break
+                    written = index + 1
+                    _set_job(job_id, doneFrames=written,
+                             progress=min(0.99, written / frame_count))
+                    _persist(job_id)
         except BaseException:
             try:
                 process.stdin.close()
@@ -1142,6 +1273,154 @@ def output_path(job_id: str) -> Path | None:
         return None
     path = job_dir(job_id) / str(file_name)
     return path if path.is_file() else None
+
+
+# ---------------------------------------------------------------------------
+# export history: list / delete / clean
+# ---------------------------------------------------------------------------
+
+
+def _dir_bytes(path: Path) -> int:
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _artifact(job_id: str, payload: Mapping[str, Any]) -> Path | None:
+    name = payload.get("fileName")
+    if not isinstance(name, str) or not name:
+        return None
+    # Only files we created ourselves live in the job dir; take the basename so
+    # a tampered job.json can never escape it.
+    path = job_dir(job_id) / Path(name).name
+    return path if path.is_file() else None
+
+
+def export_entry(job_id: str) -> dict[str, Any] | None:
+    """Summary of one ``data/renders/<jobId>/`` directory (or None)."""
+    if not _valid_job_id(job_id):
+        return None
+    payload = storage.read_json(_job_file(job_id))
+    if not isinstance(payload, dict):
+        return None
+    status = str(payload.get("status") or "failed")
+    if status not in ("queued", "running", "done", "failed"):
+        status = "failed"
+    error = payload.get("error")
+    with _JOBS_LOCK:
+        live = _JOBS.get(job_id)
+    if status in ("queued", "running") and live is None:
+        # The worker only exists in this process: a persisted unfinished job
+        # means the backend restarted mid-export.
+        status = "failed"
+        error = error or "后端服务重启导致任务中断，请重新导出。"
+    artifact = _artifact(job_id, payload)
+    finished = payload.get("finishedAt")
+    return {
+        "jobId": job_id,
+        "status": status,
+        "format": payload.get("format") or "png_zip",
+        "fps": float(payload.get("fps") or 24.0),
+        "width": int(payload.get("width") or 0),
+        "height": int(payload.get("height") or 0),
+        "frameCount": int(payload.get("frameCount") or 0),
+        "doneFrames": int(payload.get("doneFrames") or 0),
+        "fileName": artifact.name if artifact is not None else None,
+        "fileUrl": f"/api/render/{job_id}/download" if artifact is not None else None,
+        "sizeBytes": artifact.stat().st_size if artifact is not None else _dir_bytes(job_dir(job_id)),
+        "createdAt": str(payload.get("createdAt") or ""),
+        "finishedAt": str(finished) if isinstance(finished, str) and finished else None,
+        "elapsedSec": float(payload.get("elapsedSec") or 0.0),
+        "error": error,
+    }
+
+
+def list_exports(limit: int = 100) -> list[dict[str, Any]]:
+    """Export history, newest first.  Reads job.json so it survives restarts."""
+    entries: list[dict[str, Any]] = []
+    try:
+        children = list(renders_dir().iterdir())
+    except OSError:  # pragma: no cover - unreadable data dir
+        return entries
+    for child in children:
+        if not child.is_dir() or not _valid_job_id(child.name):
+            continue
+        entry = export_entry(child.name)
+        if entry is not None:
+            entries.append(entry)
+    entries.sort(key=lambda item: (item["finishedAt"] or item["createdAt"] or ""), reverse=True)
+    return entries[: max(1, int(limit))]
+
+
+def cleanup_stale_parts(max_age_sec: float = 60.0) -> int:
+    """Delete leftover ``*.part`` files from killed/interrupted jobs."""
+    removed = 0
+    now = time.time()
+    try:
+        paths = list(renders_dir().rglob("*.part"))
+    except OSError:  # pragma: no cover
+        return 0
+    for path in paths:
+        try:
+            if now - path.stat().st_mtime >= max_age_sec:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def delete_job(job_id: str) -> tuple[bool, int]:
+    """Remove one export directory.  Running jobs are protected."""
+    if not _valid_job_id(job_id):
+        return False, 0
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+    if job is not None and job.get("status") in ("queued", "running"):
+        raise RenderError(409, "任务正在渲染中，完成后才能删除。")
+    directory = job_dir(job_id)
+    if not directory.is_dir():
+        with _JOBS_LOCK:
+            _JOBS.pop(job_id, None)
+        return False, 0
+    freed = _dir_bytes(directory)
+    try:
+        shutil.rmtree(directory)
+    except OSError as exc:  # pragma: no cover - windows file lock
+        raise RenderError(500, f"删除导出文件失败：{exc}") from exc
+    with _JOBS_LOCK:
+        _JOBS.pop(job_id, None)
+    return True, freed
+
+
+def cleanup_exports(scope: str = "finished") -> dict[str, int]:
+    """Bulk-delete exports: ``finished`` / ``failed`` / ``all`` (and stray parts)."""
+    if scope not in ("finished", "failed", "all"):
+        raise RenderError(400, f"未知的清理范围：{scope}")
+    removed = 0
+    freed = 0
+    for entry in list_exports(limit=100_000):
+        status = entry["status"]
+        if scope == "finished" and status != "done":
+            continue
+        if scope == "failed" and status not in ("failed",):
+            continue
+        if scope == "all" and status in ("queued", "running"):
+            continue
+        try:
+            ok, size = delete_job(entry["jobId"])
+        except RenderError:
+            continue
+        if ok:
+            removed += 1
+            freed += size
+    parts = cleanup_stale_parts(max_age_sec=0.0)
+    return {"removed": removed, "freedBytes": int(freed), "partFiles": parts}
 
 
 def wait_until_idle(timeout: float = 30.0) -> bool:

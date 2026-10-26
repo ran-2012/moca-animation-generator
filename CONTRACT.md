@@ -185,7 +185,8 @@ viseme 枚举：`closed | n | f | a | i | u | e | o`。
 - 拗音声母拆成「辅音 + 半元音」（びょ → `b(closed) y(i) o`），保证闭口起势不丢。
 - 促音 `っ`（`cl`）与拨音 `ん`（`n`）**不覆盖**主元音：まっ → 主 `a`，あん → 主 `a` + 尾 `n`。
 - 长音（おう / おお / えい / ー）沿用前一个元音口型：きょう → 主 `o`。
-- 单独鼻音歌词 `n` / `m` / `ng` 直接映射 `n`；假名歌词里混入的汉字用拼音兜底，避免整音丢失。
+- 单独鼻音歌词 `n` / `m` / `ng` 直接映射 `n`；假名歌词里混入的汉字用拼音兜底、混入的罗马字按拼音/英文规则整段处理。
+- 一个音符里有多个元音时（ない / あい / うた）不会只取最后一个：`plan.vowels` 记录口型序列，音符的持续段按元音顺序均分帧（ない → 前半 `a`、后半 `i`），`classic` 与 `mouthPose` 模式都遵循。
 
 动画模式：`classic | clear | natural | expressive`。`classic` 保留旧 `frames` 形状；其他模式用 `mouthPose` 表示辅音、起势、音高开度和收势姿态。`frames` / `blinks` 是兼容字段，预览和导出优先消费 `mouthPose` / `tracks`，缺失时回退到旧字段。
 
@@ -289,7 +290,10 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
 |---|---|---|---|
 | POST | `/api/render` | `RenderRequest`（见下） | `RenderJobInfo` |
 | GET | `/api/render/{jobId}` | — | `RenderJobInfo`（含 progress/fileUrl） |
-| GET | `/api/render/{jobId}/download` | — | 文件（zip/mov/webm/mp4） |
+| GET | `/api/render/{jobId}/download` | — | 文件（zip/mov/webm/mp4）；未完成返回 409 |
+| GET | `/api/render/jobs?limit=100` | — | `{jobs: RenderExportEntry[]}`，按完成时间倒序 |
+| DELETE | `/api/render/{jobId}` | — | `{ok, freedBytes}`；不存在 404，渲染中 409 |
+| POST | `/api/render/cleanup` | `{scope: "finished" \| "failed" \| "all"}` | `{ok, removed, freedBytes, partFiles}` |
 
 ```json
 {
@@ -305,7 +309,7 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
   "format": "png_zip",           // png_zip | prores4444 | webm_alpha | mp4
   "background": "#101010",       // 仅 mp4
   "brow": "neutral", "cheek": "normal",
-  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0, "bpm": 76.0, "audioStart": 0.0},
+  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offsetMs": 0.0, "bpm": 76.0, "audioStart": 0.0},
   "hiddenLayers": ["15", "25"]
 }
 ```
@@ -314,8 +318,12 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
 - 限制：宽度 200–2480、单次 ≤6000 帧、时长 ≤300s。
 - `png_zip` 为 RGBA PNG 序列（FilmCraft 首选）；`prores4444` 为带 alpha 的 MOV；`webm_alpha` 为 VP9 alpha；`mp4` 铺背景色。
 - 后台线程渲染，同一时间 1 个任务；`GET` 轮询进度。
+- 导出产物保存在 `data/renders/<jobId>/`（`job.json` + 成品），**不自动清理**；`GET /api/render/jobs` 读 `job.json` 汇总（含 `sizeBytes`/`fileUrl`），重启后仍可见；磁盘残留的 `frames.zip.part` 会在后端启动时清掉。`RenderExportEntry` 中 `queued/running` 但内存里已无任务时视为 `failed`（重启中断）。
+- `png_zip` 内部**逐帧并发**：合成 + PNG 编码跑在线程池（默认用满**全部 CPU 核心**，`MOCADIFF_RENDER_WORKERS` 可覆盖；`1` = 回到单线程），帧仍按序号顺序写入 zip、`doneFrames` 单调递增。
+- 视频格式（ProRes 4444 / WebM / MP4）同样**并发合成**帧，但必须按顺序写入 ffmpeg 管道；ffmpeg 自身的编码线程由它自己管理。
+- 重复表情状态有两级缓存：合成后的 RGBA 帧（`STATE_CACHE_BYTES`）与编码后的 PNG 字节（`PNG_CACHE_BYTES`），二者都按字节上限 LRU 淘汰；`compose_state()` 返回共享图像，调用方只读。
 - 导出按 `mouthPose → viseme → defaultState` 选择口型，并按时间采样动画轨。叠加通道状态为 `off` 时不绘制。
-- `sway` 为可选节奏变换：`amplitude` 为 `0..1` 强度（最大约 4° 左右倾角、2% 纵向拉伸），`frequency` 为每拍循环次数，`offset` 为节拍偏移，`bpm` 与 `audioStart` 用于预览、时间轴和导出采用同一相位公式。启用后围绕立绘底部中心变换，透明画布尺寸不变。
+- `sway` 为可选节奏变换：`amplitude` 为 `0..1` 强度（最大约 4° 左右倾角、2% 纵向拉伸），`frequency` 为每拍循环次数，`offsetMs` 为**毫秒**相位偏移（正值 = 相位提前，范围 ±2000），`bpm` 与 `audioStart` 用于预览、时间轴和导出采用同一相位公式。启用后围绕立绘底部中心变换，透明画布尺寸不变。
 - `hiddenLayers` 为静态图层 id 列表，导出会剔除这些图层；与预览中的图层显隐保持同一份状态。
 
 ### 5.7 音频 BPM 说明（补充）
@@ -360,7 +368,7 @@ DeepSeek：OpenAI 兼容 `https://api.deepseek.com`，模型默认 `deepseek-cha
   "mappingSetId": "standard", "animationModeId": "natural",
   "timelineView": {"start": 0.25, "span": 0.5},
   "audio": {"assetId": "...", "durationSec": 242.6}, "bpm": 76.0, "offset": 0.0,
-  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offset": 0.0},
+  "sway": {"enabled": true, "amplitude": 0.35, "frequency": 0.5, "offsetMs": 0.0},
   "manifestStale": false
 }
 ```
